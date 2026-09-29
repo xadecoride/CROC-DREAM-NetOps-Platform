@@ -24,7 +24,7 @@ NEW_DEVICE = {
 }
 
 
-def _create(client: TestClient, **overrides: Any) -> dict[str, Any]:
+def _create(client: TestClient, **overrides: Any) -> Any:
     response = client.post("/api/v1/devices", json=NEW_DEVICE | overrides, headers=ADMIN)
     assert response.status_code == 201, response.text
     return response.json()

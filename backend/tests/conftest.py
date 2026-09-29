@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import uuid
 from collections.abc import Callable, Iterator
+from typing import Any
 from dataclasses import replace
 from pathlib import Path
 
@@ -93,7 +94,7 @@ def lab_path(tmp_path: Path, intent_repo: Path) -> Path:
 @pytest.fixture
 def settings(tmp_path: Path, intent_repo: Path, lab_path: Path) -> Settings:
     return Settings(
-        _env_file=None,  # type: ignore[call-arg]
+        _env_file=None,
         database_url=f"sqlite:///{tmp_path / 'netops.db'}",
         intent_repo_path=intent_repo,
         templates_path=TEMPLATES,
@@ -162,7 +163,7 @@ def run_job(
     that assertions see what the worker wrote.
     """
 
-    def run(job_id: uuid.UUID, **overrides: object) -> JobStatus | None:
+    def run(job_id: uuid.UUID, **overrides: Any) -> JobStatus | None:
         chain = replace(toolchain, **overrides) if overrides else toolchain
         status = JobRunner(session_factory, lambda: chain).run(job_id)
         session.expire_all()

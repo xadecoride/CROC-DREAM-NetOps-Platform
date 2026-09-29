@@ -33,11 +33,12 @@ def _enum(name: str, values: Sequence[str]) -> sa.Enum:
     return sa.Enum(*values, name=name, native_enum=False, length=32)
 
 
-def _timestamp(name: str, *, nullable: bool = False) -> sa.Column:
+from typing import Any
+def _timestamp(name: str, *, nullable: bool = False) -> sa.Column[Any]:
     return sa.Column(name, sa.DateTime(timezone=True), nullable=nullable)
 
 
-def _json(name: str) -> sa.Column:
+def _json(name: str) -> sa.Column[Any]:
     return sa.Column(name, sa.JSON().with_variant(postgresql.JSONB(), "postgresql"), nullable=False)
 
 

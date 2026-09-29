@@ -65,7 +65,7 @@ def test_celery_dispatcher_sends_the_job_by_name() -> None:
             sent.append({"name": name, **options})
 
     job_id = uuid.uuid4()
-    CeleryJobDispatcher(FakeCelery()).dispatch(job_id)  # type: ignore[arg-type]
+    CeleryJobDispatcher(FakeCelery()).dispatch(job_id)
     assert sent == [{"name": RUN_JOB_TASK, "args": [str(job_id)], "task_id": str(job_id)}]
 
 

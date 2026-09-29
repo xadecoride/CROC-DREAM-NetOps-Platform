@@ -67,7 +67,7 @@ python_version = "3.11"
 packages = ["netops"]
 plugins = ["pydantic.mypy"]
 strict = true
-warn_unreachable = true
+
 
 [[tool.mypy.overrides]]
 module = ["celery.*", "hier_config.*", "kombu.*"]

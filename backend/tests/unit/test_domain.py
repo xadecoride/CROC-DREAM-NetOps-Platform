@@ -98,7 +98,7 @@ def test_role_hierarchy(role: UserRole, required: UserRole, granted: bool) -> No
 
 def test_settings_authenticate() -> None:
     settings = Settings(
-        _env_file=None,  # type: ignore[call-arg]
+        _env_file=None,
         api_tokens={"t0ken": {"username": "alice", "role": "admin"}},
     )
     principal = settings.authenticate("t0ken")
@@ -112,7 +112,7 @@ def test_settings_authenticate() -> None:
 def test_settings_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NETOPS_DRIFT_SCAN_INTERVAL_SECONDS", "600")
     monkeypatch.setenv("NETOPS_AUTH_PROFILES", '{"lab": {"username": "admin", "password": "pw"}}')
-    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    settings = Settings(_env_file=None)
     assert settings.drift_scan_interval_seconds == 600
     assert settings.auth_profiles["lab"].password.get_secret_value() == "pw"
     assert "pw" not in repr(settings)
@@ -125,15 +125,15 @@ def test_naive_datetimes_are_rejected() -> None:
 
 def test_postgres_engine_checks_connections() -> None:
     engine = build_engine("postgresql+psycopg://user:pw@db.invalid/netops")
-    assert engine.pool._pre_ping is True  # type: ignore[attr-defined]
+    assert engine.pool._pre_ping is True
     engine.dispose()
 
 
 def test_post_check_retries_must_fit_the_confirm_timer() -> None:
-    fine = Settings(_env_file=None, post_check_attempts=6, post_check_interval_seconds=10)  # type: ignore[call-arg]
+    fine = Settings(_env_file=None, post_check_attempts=6, post_check_interval_seconds=10)
     assert fine.post_check_attempts == 6
     with pytest.raises(ValueError, match="more than half"):
-        Settings(  # type: ignore[call-arg]
+        Settings(
             _env_file=None,
             commit_confirm_timeout_seconds=60,
             post_check_attempts=10,

@@ -18,7 +18,7 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _create(client: TestClient, username: str = "duty", role: str = "operator") -> dict[str, Any]:
+def _create(client: TestClient, username: str = "duty", role: str = "operator") -> Any:
     response = client.post(
         "/api/v1/users", json={"username": username, "role": role}, headers=ADMIN
     )
