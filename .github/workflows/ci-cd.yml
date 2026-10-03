@@ -2,20 +2,22 @@ name: CI/CD
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
 
+# Ветки этого репозитория проверяются по push, поэтому по pull_request гоняем только PR из форков.
 jobs:
-  tests:
-    name: Линтеры и тесты
+  backend:
+    name: "Бэкенд: линтеры и тесты"
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
@@ -48,8 +50,32 @@ jobs:
       - name: Покрытие в сводку
         run: uv run coverage report --format=markdown --skip-covered >> "$GITHUB_STEP_SUMMARY"
 
+  frontend:
+    name: "Фронтенд: сборка и типы"
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Зависимости
+        run: npm ci
+
+      - name: Сборка
+        run: npm run build
+
   stack:
-    name: Образ и стек в docker compose
+    name: "Стек в docker compose"
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -69,29 +95,16 @@ jobs:
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
 
-      # Стенд на файлах: intent и шаблоны из фикстур тестов, в running-config только hostname,
-      # поэтому dry-run находит изменения на каждом устройстве.
-      - name: Тестовый стенд
+      # Стек на данных из репозитория (intent/, templates/, lab/running/), как у команды локально.
+      # Скан по расписанию раз в минуту, чтобы smoke-тест дождался задачи от Beat.
+      - name: Настройки стенда
         run: |
           cp backend/.env.example backend/.env
           sed -i 's/^NETOPS_DRIFT_SCAN_INTERVAL_SECONDS=.*/NETOPS_DRIFT_SCAN_INTERVAL_SECONDS=60/' backend/.env
-          fixtures="$GITHUB_WORKSPACE/backend/tests/fixtures"
-          lab="$RUNNER_TEMP/lab"
-          mkdir -p "$lab"
-          for intent in "$fixtures"/intent-repo/devices/*.yaml; do
-            host=$(basename "$intent" .yaml)
-            echo "hostname $host" > "$lab/$host.cfg"
-          done
-          {
-            echo "INTENT_REPO=$fixtures/intent-repo"
-            echo "TEMPLATES=$fixtures/templates"
-            echo "OFFLINE_LAB=$lab"
-          } >> "$GITHUB_ENV"
 
       - name: Запуск стека
         run: docker compose up -d --no-build --wait --wait-timeout 180
 
-      # Интервал скана в CI — 60 с, поэтому плановый скан от Beat ждём до 150 с.
       - name: Smoke-тест
         run: python3 backend/scripts/smoke_stack.py --beat-timeout 150
 
@@ -107,7 +120,7 @@ jobs:
 
   publish:
     name: Публикация образа в GHCR
-    needs: [tests, stack]
+    needs: [backend, frontend, stack]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
