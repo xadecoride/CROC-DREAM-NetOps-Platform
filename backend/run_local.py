@@ -24,10 +24,15 @@ os.environ.setdefault("NETOPS_INTENT_REPO_PATH", str(PROJECT_ROOT / "intent"))
 os.environ.setdefault("NETOPS_TEMPLATES_PATH", str(PROJECT_ROOT / "templates"))
 os.environ.setdefault("NETOPS_OFFLINE_LAB_PATH", str(PROJECT_ROOT / "lab" / "running"))
 os.environ.setdefault("NETOPS_NETWORK_DRIVER", "offline")
-os.environ.setdefault("NETOPS_CORS_ORIGINS", '["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"]')
+os.environ.setdefault(
+    "NETOPS_CORS_ORIGINS",
+    '["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"]',
+)
 os.environ.setdefault(
     "NETOPS_API_TOKENS",
-    '{"dev-admin-token": {"username": "admin", "role": "admin"}, "dev-operator-token": {"username": "operator", "role": "operator"}, "dev-viewer-token": {"username": "viewer", "role": "viewer"}}',
+    '{"dev-admin-token": {"username": "admin", "role": "admin"}, '
+    '"dev-operator-token": {"username": "operator", "role": "operator"}, '
+    '"dev-viewer-token": {"username": "viewer", "role": "viewer"}}',
 )
 os.environ.setdefault(
     "NETOPS_AUTH_PROFILES",
@@ -35,6 +40,7 @@ os.environ.setdefault(
 )
 
 import uvicorn
+
 from netops.api.app import create_app
 from netops.db import Base, build_engine, build_session_factory
 from netops.intent.repository import IntentRepository
@@ -53,7 +59,9 @@ class ThreadedJobDispatcher:
 
     def __init__(self, runner_factory) -> None:
         self._runner_factory = runner_factory
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="netops-worker")
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="netops-worker"
+        )
 
     def dispatch(self, job_id: uuid.UUID) -> None:
         logger.info("Dispatching job %s to background thread...", job_id)

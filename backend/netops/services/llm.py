@@ -156,7 +156,8 @@ def _sync_http_request(url: str, headers: dict[str, str], payload: dict[str, Any
     data_bytes = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=12.0) as response:
-        return response.read().decode("utf-8")
+        body: bytes = response.read()
+    return body.decode("utf-8")
 
 
 async def explain_change_with_llm(
