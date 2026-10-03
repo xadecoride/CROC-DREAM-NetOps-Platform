@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import inspect
 from sqlalchemy.exc import SQLAlchemyError
 
-from netops.api.deps import ContainerDep, SessionDep, Viewer
+from netops.api.deps import ContainerDep, Operator, SessionDep, Viewer
 from netops.db import Base
 from netops.network.rendering import JinjaConfigRenderer
 from netops.schemas.intent import IntentIssueRead, IntentLintReport
@@ -66,7 +66,7 @@ def lint_intent(container: ContainerDep, _: Viewer) -> IntentLintReport:
 
 
 @api_router.post("/system/chaos", tags=["system"], summary="Simulate network incident")
-def inject_chaos(req: ChaosRequest, container: ContainerDep, _: Viewer) -> dict[str, str]:
+def inject_chaos(req: ChaosRequest, container: ContainerDep, _: Operator) -> dict[str, str]:
     lab_dir = container.settings.offline_lab_path
     if req.scenario == "acl_drift":
         leaf1_cfg = lab_dir / "leaf-1.croc.lab.cfg"
