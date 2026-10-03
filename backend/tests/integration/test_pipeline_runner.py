@@ -65,6 +65,7 @@ def test_lint_failure_never_reaches_the_network(
     assert job.error == "Pre-flight lint failed: 2 issue(s) in the intent"
     assert any("Router ID 10.255.0.1 is shared" in log.message for log in job.logs)
     assert job.targets[0].status is TargetStatus.SKIPPED
+    assert job.progress == 0
 
 
 def test_device_without_intent(job_service: JobService, run_job: RunJob, session: Session) -> None:
@@ -136,6 +137,14 @@ def test_missing_collector_result(
     assert _targets(session, job.id)["leaf-1.croc.lab"].error == (
         "Cannot collect running-config: no result from the collector"
     )
+
+
+def test_failed_dry_run_keeps_the_progress_it_reached(
+    devices: dict[str, Device], job_service: JobService, run_job: RunJob, session: Session
+) -> None:
+    job = _dry_run(job_service, devices["leaf-1.croc.lab"])
+    assert run_job(job.id, collector=SpyCollector()) is JobStatus.FAILED
+    assert session.get_one(Job, job.id).progress == 66
 
 
 def test_diff_errors_are_per_device(
