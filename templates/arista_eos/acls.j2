@@ -1,0 +1,6 @@
+{% for acl in intent.acls %}
+ip access-list {{ acl.name }}
+{% for rule in acl.rules %}
+   {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} {{ rule.source }} {{ rule.destination }}
+{% endfor %}
+{% endfor %}

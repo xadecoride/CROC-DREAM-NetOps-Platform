@@ -1,0 +1,21 @@
+devices:
+  - hostname: spine-1.croc.lab
+    management_ip: 172.20.20.11
+    platform: arista_eos
+    role: spine
+    auth_profile: lab
+  - hostname: spine-2.croc.lab
+    management_ip: 172.20.20.12
+    platform: arista_eos
+    role: spine
+    auth_profile: lab
+  - hostname: leaf-1.croc.lab
+    management_ip: 172.20.20.21
+    platform: cisco_iosxe
+    role: leaf
+    auth_profile: lab
+  - hostname: leaf-2.croc.lab
+    management_ip: 172.20.20.22
+    platform: cisco_iosxe
+    role: leaf
+    auth_profile: lab

@@ -18,6 +18,12 @@ dependencies = [
     "uvicorn[standard]>=0.30",
 ]
 
+[project.optional-dependencies]
+scrapli = [
+    "scrapli>=2024.7.30",
+    "scrapli-community>=2024.7.30",
+]
+
 [dependency-groups]
 dev = [
     "black>=24.4",
@@ -72,7 +78,7 @@ strict = true
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["celery.*", "hier_config.*", "kombu.*"]
+module = ["celery.*", "hier_config.*", "kombu.*", "scrapli.*", "scrapli_community.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

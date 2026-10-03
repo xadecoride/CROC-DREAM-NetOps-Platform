@@ -37,7 +37,9 @@ class Settings(BaseSettings):
     templates_path: Path = Path("templates")
     normalization_rules_path: Path | None = None
 
-    network_driver: Literal["offline"] = "offline"
+    # "offline" emulates the lab with running-configs stored as files; the
+    # Scrapli/Nornir driver will be registered here once it is ready.
+    network_driver: Literal["offline", "scrapli"] = "offline"
     offline_lab_path: Path = Path("lab/running")
 
     commit_confirm_timeout_seconds: int = Field(default=180, ge=30, le=3600)
@@ -53,6 +55,12 @@ class Settings(BaseSettings):
     # {"lab": {"username": "admin", "password": "admin"}}
     auth_profiles: dict[str, AuthProfile] = Field(default_factory=dict)
 
+    # LLM Risk Assistant settings (Xiaomi MiMo-V2.6-Flash or any OpenAI-compatible API)
+    llm_api_key: SecretStr | None = None
+    llm_base_url: str = "https://api.hcnsec.cn/v1"
+    llm_model: str = "MiMo-V2.6-Flash"
+
+    # Browser origins allowed to call the API (the Vite dev server by default).
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )

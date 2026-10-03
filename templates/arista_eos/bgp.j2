@@ -1,0 +1,16 @@
+{% if intent.bgp %}
+router bgp {{ intent.bgp.asn }}
+   router-id {{ intent.bgp.router_id }}
+{% for neighbor in intent.bgp.neighbors %}
+   neighbor {{ neighbor.peer_ip }} remote-as {{ neighbor.remote_asn }}
+{% if neighbor.description %}
+   neighbor {{ neighbor.peer_ip }} description {{ neighbor.description }}
+{% endif %}
+{% if neighbor.password %}
+   neighbor {{ neighbor.peer_ip }} password {{ neighbor.password }}
+{% endif %}
+{% endfor %}
+{% for prefix in intent.bgp.neighbors | map(attribute="announced_prefixes") | sum(start=[]) | unique %}
+   network {{ prefix }}
+{% endfor %}
+{% endif %}

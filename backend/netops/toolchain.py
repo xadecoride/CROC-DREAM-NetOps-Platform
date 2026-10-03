@@ -58,6 +58,13 @@ def build_toolchain(settings: Settings) -> Toolchain:
             collector: ConfigCollector = lab
             deployer: ConfigDeployer = lab
             health_probe: HealthProbe = lab
+        case "scrapli":
+            from netops.network.scrapli_driver import ScrapliNetworkDriver  # noqa: PLC0415
+
+            driver = ScrapliNetworkDriver()
+            collector = driver
+            deployer = driver
+            health_probe = driver
 
     return Toolchain(
         intents=IntentRepository(settings.intent_repo_path),

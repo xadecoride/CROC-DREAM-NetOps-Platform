@@ -841,6 +841,12 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+scrapli = [
+    { name = "scrapli" },
+    { name = "scrapli-community" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "black" },
@@ -863,9 +869,12 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", specifier = ">=2.3" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "scrapli", marker = "extra == 'scrapli'", specifier = ">=2024.7.30" },
+    { name = "scrapli-community", marker = "extra == 'scrapli'", specifier = ">=2024.7.30" },
     { name = "sqlalchemy", specifier = ">=2.0.30" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
+provides-extras = ["scrapli"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1321,6 +1330,27 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ac/fe/734ec7527029ac757ecf821f143c9f3fcf69149c21f53a044a899b430f5a/ruff-0.16.9-py3-none-win32.whl", hash = "sha256:0e1dbc2073624dee6618d41d0098690a7244654af746704b64759e12b6b6b385", size = 10152355, upload-time = "2026-09-24T20:37:43.025Z" },
     { url = "https://files.pythonhosted.org/packages/14/21/26e4643629b3ebb44f0a06f9c9a53058d63d989415f63a9a3c28e2ee7f22/ruff-0.16.9-py3-none-win_amd64.whl", hash = "sha256:6bd40fec8cd4c8a3d4dd589bd8ad4e6320c13c29234159bfd959a40d529d597b", size = 10592965, upload-time = "2026-09-24T20:37:44.944Z" },
     { url = "https://files.pythonhosted.org/packages/51/60/5fb1a39dbb5ae314d5f59bc7348a63c1d5c20f3cd83914c4b5cb0be31d2d/ruff-0.16.9-py3-none-win_arm64.whl", hash = "sha256:ed1a252039200f57a59eebc063b54beabea67bfbaaca0eeaa7f54b5fbcda2284", size = 10458649, upload-time = "2026-09-24T20:37:46.882Z" },
+]
+
+[[package]]
+name = "scrapli"
+version = "2026.2.20"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cc/20/5a16997013f9aca4100e41493a93af774b1e73ef2c0fafc312a250b7425a/scrapli-2026.2.20.tar.gz", hash = "sha256:b6f8492110601c11ca8394d8540814464bb97681b87e92b30bb6853b5213558a", size = 104525, upload-time = "2026-02-20T23:42:57.414Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2f/bd/4297e274df5cb43d0e3a85d9a30e7298daa13185f26442ef3f142a047105/scrapli-2026.2.20-py3-none-any.whl", hash = "sha256:abbe6f0d70e9b59166e590a74335781e4b5987a488403e08110ce75321a255af", size = 145891, upload-time = "2026-02-20T23:42:56.113Z" },
+]
+
+[[package]]
+name = "scrapli-community"
+version = "2025.1.30"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "scrapli" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/92/29/b5df286b9cb143f1e95b7824a8ba1ebb0fc7606b96a0a50a62fc50cf3858/scrapli_community-2025.1.30.tar.gz", hash = "sha256:5357d1e471879203f648948adf114d8155a69ca1242060504d9b92f54f79d119", size = 33083, upload-time = "2025-01-31T00:50:37.445Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/23/67/c0c0d088a786fcaa3e0584a765f1da00b0560dadc7f0ea8c8755b7d175f3/scrapli_community-2025.1.30-py3-none-any.whl", hash = "sha256:dc4d02193ec3bb14cec9e04ab0d48fc59d575e1ccedac92fb4b8bbd6f3b6726f", size = 93093, upload-time = "2025-01-31T00:50:36.099Z" },
 ]
 
 [[package]]

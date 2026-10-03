@@ -1,0 +1,18 @@
+{% for iface in intent.interfaces %}
+interface {{ iface.name }}
+{% if iface.description %}
+   description {{ iface.description }}
+{% endif %}
+{% if iface.mtu != 1500 %}
+   mtu {{ iface.mtu }}
+{% endif %}
+{% if iface.mode == "l3" and not iface.name.startswith("Loopback") %}
+   no switchport
+{% endif %}
+{% if iface.ipv4_address %}
+   ip address {{ iface.ipv4_address.with_prefixlen }}
+{% endif %}
+{% if not iface.enabled %}
+   shutdown
+{% endif %}
+{% endfor %}

@@ -13,11 +13,22 @@ build/
 
 # Локальные настройки и данные
 .env
+.env.*
+!.env.example
+*.key
+*.pem
+*.token
+*.secret
 *.db
 *.sqlite
 celerybeat-schedule*
 
-# ОС и редакторы
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/.cache/
+
+# OS / editors
 .DS_Store
 .idea/
 .vscode/

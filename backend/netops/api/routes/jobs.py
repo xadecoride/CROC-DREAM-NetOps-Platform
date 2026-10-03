@@ -5,9 +5,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 
-from netops.api.deps import JobServiceDep, Operator, Viewer
+from netops.api.deps import ContainerDep, JobServiceDep, Operator, Viewer
 from netops.enums import JobStatus, JobType
+from netops.errors import NotFoundError
 from netops.models import Job, JobLog
+from netops.services.llm import RiskExplanation, explain_change_with_llm
 from netops.schemas.jobs import (
     DeployRequest,
     DeviceDiffRead,
@@ -107,4 +109,42 @@ def get_job_diff(job_id: uuid.UUID, service: JobServiceDep, _: Viewer) -> JobDif
             )
             for target in job.targets
         ],
+    )
+
+
+@router.post(
+    "/{job_id}/explain",
+    response_model=RiskExplanation,
+    summary="AI risk analysis for job configuration changes",
+)
+async def explain_job_diff(
+    job_id: uuid.UUID,
+    service: JobServiceDep,
+    container: ContainerDep,
+    _: Viewer,
+    hostname: Annotated[str | None, Query(description="Filter by specific hostname")] = None,
+) -> RiskExplanation:
+    job = service.get_with_diff(job_id)
+    target = None
+    if hostname:
+        for t in job.targets:
+            if t.hostname == hostname:
+                target = t
+                break
+        if not target:
+            raise NotFoundError(f"Target device {hostname!r} not found in job {job_id}")
+    else:
+        target = next((t for t in job.targets if t.remediation_config), job.targets[0] if job.targets else None)
+
+    if not target:
+        raise NotFoundError(f"No targets found in job {job_id}")
+
+    platform_str = target.device.platform.value if (target.device and hasattr(target.device, "platform")) else "cisco_iosxe"
+
+    return await explain_change_with_llm(
+        settings=container.settings,
+        hostname=target.hostname,
+        platform=platform_str,
+        remediation_patch=target.remediation_config or "",
+        rollback_patch=target.rollback_config or "",
     )

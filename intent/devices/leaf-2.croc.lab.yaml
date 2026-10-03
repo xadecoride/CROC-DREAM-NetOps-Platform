@@ -1,0 +1,25 @@
+hostname: leaf-2.croc.lab
+interfaces:
+  - name: Loopback0
+    description: Router ID
+    ipv4_address: 10.255.1.2/32
+  - name: GigabitEthernet2
+    description: Uplink to spine-1
+    ipv4_address: 10.0.2.1/31
+    mtu: 9000
+  - name: GigabitEthernet3
+    description: Uplink to spine-2
+    ipv4_address: 10.0.2.3/31
+    mtu: 9000
+bgp:
+  asn: 65102
+  router_id: 10.255.1.2
+  neighbors:
+    - peer_ip: 10.0.2.0
+      remote_asn: 65000
+      description: spine-1
+      announced_prefixes: ["10.255.1.2/32"]
+    - peer_ip: 10.0.2.2
+      remote_asn: 65000
+      description: spine-2
+      announced_prefixes: ["10.255.1.2/32"]
