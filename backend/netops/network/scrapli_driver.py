@@ -10,6 +10,7 @@ import concurrent.futures
 import logging
 import re
 from collections.abc import Mapping, Sequence
+from typing import Any
 
 from netops.enums import Platform
 from netops.network.base import (
@@ -32,9 +33,9 @@ class ScrapliNetworkDriver:
         self.max_workers = max_workers
         self.timeout_socket = timeout_socket
 
-    def _get_connection(self, target: DeviceTarget):
+    def _get_connection(self, target: DeviceTarget) -> Any:
         try:
-            from scrapli.driver.core import EOSDriver, IOSXEDriver
+            from scrapli.driver.core import EOSDriver, IOSXEDriver  # noqa: PLC0415
         except ImportError:
             raise RuntimeError("Scrapli is not installed in the environment.") from None
 
@@ -54,8 +55,7 @@ class ScrapliNetworkDriver:
         results: dict[str, FetchResult] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_host = {
-                executor.submit(self._fetch_single, target): target.hostname
-                for target in targets
+                executor.submit(self._fetch_single, target): target.hostname for target in targets
             }
             for future in concurrent.futures.as_completed(future_to_host):
                 hostname = future_to_host[future]
@@ -73,10 +73,14 @@ class ScrapliNetworkDriver:
             response = conn.send_command(cmd)
             if response.failed:
                 raise RuntimeError(f"Command '{cmd}' failed: {response.result}")
-            return response.result
+            return str(response.result)
 
     def apply(self, target: DeviceTarget, plan: ChangePlan, *, confirm_timeout: int) -> None:
-        lines = [line.strip() for line in plan.remediation.splitlines() if line.strip() and not line.startswith("!")]
+        lines = [
+            line.strip()
+            for line in plan.remediation.splitlines()
+            if line.strip() and not line.startswith("!")
+        ]
         if not lines:
             return
 
@@ -107,7 +111,9 @@ class ScrapliNetworkDriver:
                 conn.send_command("abort")
 
             rollback_lines = [
-                line.strip() for line in plan.rollback.splitlines() if line.strip() and not line.startswith("!")
+                line.strip()
+                for line in plan.rollback.splitlines()
+                if line.strip() and not line.startswith("!")
             ]
             if rollback_lines:
                 conn.send_configs(rollback_lines)
@@ -120,11 +126,15 @@ class ScrapliNetworkDriver:
         with self._get_connection(target) as conn:
             bgp_out = conn.send_command("show ip bgp summary").result
             for line in bgp_out.splitlines():
-                match = re.search(r"^(\d+\.\d+\.\d+\.\d+)\s+.*?\s+(\d+|Active|Idle|Connect)$", line.strip())
+                match = re.search(
+                    r"^(\d+\.\d+\.\d+\.\d+)\s+.*?\s+(\d+|Active|Idle|Connect)$", line.strip()
+                )
                 if match:
                     peer_ip, state_or_pfx = match.groups()
                     if state_or_pfx.isdigit():
-                        bgp_sessions[peer_ip] = BgpSessionState("Established", prefixes_accepted=int(state_or_pfx))
+                        bgp_sessions[peer_ip] = BgpSessionState(
+                            "Established", prefixes_accepted=int(state_or_pfx)
+                        )
                     else:
                         bgp_sessions[peer_ip] = BgpSessionState(state_or_pfx, prefixes_accepted=0)
 
@@ -134,11 +144,14 @@ class ScrapliNetworkDriver:
                 if target.platform == Platform.CISCO_IOSXE and len(parts) >= 6:
                     if parts[0].startswith("Gigabit") or parts[0].startswith("Loop"):
                         interfaces[parts[0]] = InterfaceState(status=parts[4], protocol=parts[5])
-                elif target.platform == Platform.ARISTA_EOS and len(parts) >= 4:
-                    if parts[0].startswith("Ethernet") or parts[0].startswith("Loop"):
-                        status = "up" if "up" in parts[1].lower() else "down"
-                        proto = "up" if "up" in parts[2].lower() else "down"
-                        interfaces[parts[0]] = InterfaceState(status=status, protocol=proto)
+                elif (
+                    target.platform == Platform.ARISTA_EOS
+                    and len(parts) >= 4
+                    and (parts[0].startswith("Ethernet") or parts[0].startswith("Loop"))
+                ):
+                    status = "up" if "up" in parts[1].lower() else "down"
+                    proto = "up" if "up" in parts[2].lower() else "down"
+                    interfaces[parts[0]] = InterfaceState(status=status, protocol=proto)
 
             if expected:
                 for peer in expected.bgp_peers:

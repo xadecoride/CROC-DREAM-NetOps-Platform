@@ -9,7 +9,6 @@ from netops.api.deps import ContainerDep, JobServiceDep, Operator, Viewer
 from netops.enums import JobStatus, JobType
 from netops.errors import NotFoundError
 from netops.models import Job, JobLog
-from netops.services.llm import RiskExplanation, explain_change_with_llm
 from netops.schemas.jobs import (
     DeployRequest,
     DeviceDiffRead,
@@ -20,6 +19,7 @@ from netops.schemas.jobs import (
     JobRead,
     JobSummary,
 )
+from netops.services.llm import RiskExplanation, explain_change_with_llm
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -134,12 +134,19 @@ async def explain_job_diff(
         if not target:
             raise NotFoundError(f"Target device {hostname!r} not found in job {job_id}")
     else:
-        target = next((t for t in job.targets if t.remediation_config), job.targets[0] if job.targets else None)
+        target = next(
+            (t for t in job.targets if t.remediation_config),
+            job.targets[0] if job.targets else None,
+        )
 
     if not target:
         raise NotFoundError(f"No targets found in job {job_id}")
 
-    platform_str = target.device.platform.value if (target.device and hasattr(target.device, "platform")) else "cisco_iosxe"
+    platform_str = (
+        target.device.platform.value
+        if (target.device and hasattr(target.device, "platform"))
+        else "cisco_iosxe"
+    )
 
     return await explain_change_with_llm(
         settings=container.settings,
