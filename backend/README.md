@@ -19,6 +19,7 @@ dry-run → deploy с откатом и движок дрейфа по расп�
 | Post-check по правилам Health-Check: заявленные BGP-соседи в Established с префиксами, порты up/up, потери ping ≤ 20 %, ожидание сходимости BGP | `netops/network/health.py`, `netops/pipeline/deployment.py` |
 | RBAC: viewer / operator / admin, управление пользователями и токенами | `netops/api/deps.py`, `netops/services/users.py` |
 | Общий docker-compose: бэкенд, PostgreSQL, Redis, миграции, воркер, Beat | `../docker-compose.yml` |
+| CI/CD: линтеры и тесты, сборка образа, smoke-тест всего стека, публикация образа в GHCR | `../.github/workflows/ci-cd.yml`, `scripts/smoke_stack.py` |
 | OpenAPI/Swagger | `/docs`, `/openapi.json` |
 
 ## Быстрый старт
@@ -76,7 +77,7 @@ Postgres считается готовым только когда приним�
 ## Проверки
 
 ```bash
-uv run pytest --cov=netops   # 288 тестов, SQLite, без Redis и сети
+uv run pytest --cov=netops   # 299 тестов, SQLite, без Redis и сети
 uv run ruff check .
 uv run black --check .
 uv run mypy                  # strict
@@ -85,6 +86,31 @@ uv run mypy                  # strict
 Тест `tests/integration/test_migrations.py` прогоняет миграции и сверяет результат с моделями —
 если поменяли модель и забыли миграцию, он упадёт. Новая миграция:
 `uv run alembic revision --autogenerate -m "..."`, затем проверить файл руками.
+
+Тесты `tests/integration/test_repo_data.py` проверяют данные стенда в корне репозитория: intent
+проходит линт, шаблоны из `templates/` рендерятся для каждого устройства. Если
+`intent/inventory.yaml` нет, они пропускаются.
+
+**Smoke-тест стека.** Когда стек поднят (`docker compose up -d --wait`), из корня репозитория:
+
+```bash
+python3 backend/scripts/smoke_stack.py
+```
+
+Скрипт проверяет, что миграции применены, токен администратора работает, dry-run и скан дрейфа
+на всех устройствах проходят через Redis и воркер, а все контейнеры compose `running` /
+`healthy` и ни разу не перезапускались. На устройствах ничего не меняет. С `--beat-timeout 120`
+дополнительно дождётся планового скана от Celery Beat — для этого
+`NETOPS_DRIFT_SCAN_INTERVAL_SECONDS` нужно уменьшить, например до 60.
+
+**CI/CD** (`.github/workflows/ci-cd.yml`) запускается на пуш в любую ветку и на PR из форков:
+
+- бэкенд: ruff, black, mypy, pytest; покрытие — в сводке запуска;
+- фронтенд: `npm ci` и `npm run build` (сборка и проверка типов);
+- сборка Docker-образа и весь стек в docker compose на данных из `intent/`, `templates/` и
+  `lab/running/` со smoke-тестом; интервал скана — 60 с, чтобы дождаться задачи от Beat;
+- после мержа в `main` образ публикуется в `ghcr.io/xadecoride/netops-backend`
+  (теги `latest` и `sha-<коммит>`).
 
 ## Конфигурация
 
@@ -148,6 +174,10 @@ uv run mypy                  # strict
 - **DRIFT_REMEDIATE** — пересчитывает компенсирующий патч на текущем running-config и
   прогоняет его через тот же транзакционный деплой.
 
+Прогресс (`progress` в `GET /api/v1/jobs/{id}`): у dry-run и скана — по этапам (рендер — 33 %,
+сбор running-config — 66 %), у деплоя — по устройствам; 100 % — после успешного завершения.
+У упавшей задачи прогресс остаётся на том этапе, где она остановилась.
+
 **Post-check** (правила Health-Check из раздела 2.6). При dry-run из intent запоминается, что
 заявлено для устройства: BGP-соседи и интерфейсы. После применения:
 
@@ -200,13 +230,16 @@ cisco_iosxe:
 
 ## Что ещё не сделано
 
-- Драйвер Scrapli/Nornir и реальные health-check команды (Максим) — пока `OfflineLab`.
-- Реальные шаблоны Jinja2 (Тимофей) — в репозитории только тестовые.
+- Драйвер Scrapli (Максим, `netops/network/scrapli_driver.py`) на живом стенде не проверялся.
+  В Docker-образе его пока не запустить: `scrapli` — необязательная зависимость, а системного
+  `ssh` в образе нет.
+- Реальные шаблоны Jinja2 (Тимофей) — в `templates/` пока копии тестовых. CI проверяет, что
+  шаблоны рендерятся для всех устройств.
 - Метрики для Prometheus и Grafana — отложены; фронтенд в `docker-compose.yml` — когда будет
   образ React-приложения.
 - Из раздела 2.7 для администратора пока нет «утверждения опасных изменений» и
   «принудительного наката команд отката» — вынести на обсуждение, что считать опасным изменением.
-- LLM-ассистент (Максим): ключ модели нельзя отдавать в браузер, поэтому вызов лучше делать
-  через бэкенд — эндпоинт добавим, когда будет выбран провайдер.
+- LLM-ассистент (Максим): `POST /api/v1/jobs/{id}/explain`, без ключа работает эвристика.
+  Нужно согласовать провайдера: в диффах, которые уходят модели, есть пароли BGP.
 - `intent_source` поддерживает только `git_main` (читается рабочая копия в `INTENT_REPO_PATH`,
   `git pull` выполняется снаружи).
