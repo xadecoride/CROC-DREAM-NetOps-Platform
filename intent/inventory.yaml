@@ -1,21 +1,54 @@
+---
+auth_profiles:
+  spine1_auth:
+    username: "admin"
+    password: "F5ga6jfkig1"
+
+  spine2_auth:
+    username: "admin"
+    password: "F5ga6jfkig2"
+
+  leaf1_auth:
+    username: "admin"
+    password: "F5ga6jfkig"
+
+  leaf2_auth:
+    username: "admin"
+    password: "F5ga6jfkig2"
+
 devices:
-  - hostname: spine-1.croc.lab
-    management_ip: 172.20.20.11
-    platform: arista_eos
-    role: spine
-    auth_profile: lab
-  - hostname: spine-2.croc.lab
-    management_ip: 172.20.20.12
-    platform: arista_eos
-    role: spine
-    auth_profile: lab
-  - hostname: leaf-1.croc.lab
-    management_ip: 172.20.20.21
-    platform: cisco_iosxe
-    role: leaf
-    auth_profile: lab
-  - hostname: leaf-2.croc.lab
-    management_ip: 172.20.20.22
-    platform: cisco_iosxe
-    role: leaf
-    auth_profile: lab
+  - id: 1 # REASON: Уникальный порядковый ID устройства согласно схеме 2.1
+    hostname: "spine-1.croc.lab"
+    management_ip: "172.20.20.5"
+    management_port: 22
+    platform: "cisco_iosxe"
+    role: "spine"
+    auth_profile: "spine1_auth"
+    status: "IN_SYNC" # REASON: Базовый статус комплаенса по умолчанию
+
+  - id: 2 # REASON: Уникальный порядковый ID устройства
+    hostname: "spine-2.croc.lab"
+    management_ip: "172.20.20.4"
+    management_port: 22
+    platform: "arista_eos"
+    role: "spine"
+    auth_profile: "spine2_auth"
+    status: "IN_SYNC"
+
+  - id: 3 # REASON: Уникальный порядковый ID устройства
+    hostname: "leaf-1.croc.lab"
+    management_ip: "172.20.20.2"
+    management_port: 22
+    platform: "huawei_vrp"
+    role: "leaf"
+    auth_profile: "leaf1_auth"
+    status: "IN_SYNC"
+
+  - id: 4 # REASON: Уникальный порядковый ID устройства
+    hostname: "leaf-2.croc.lab"
+    management_ip: "172.20.20.6"
+    management_port: 22
+    platform: "huawei_vrp"
+    role: "leaf"
+    auth_profile: "leaf2_auth"
+    status: "IN_SYNC"

@@ -1,43 +1,45 @@
-hostname: leaf-1.croc.lab
+---
+hostname: "leaf-1.croc.lab"
+
 interfaces:
-  - name: Loopback0
-    description: Router ID
-    ipv4_address: 10.255.1.1/32
-  - name: GigabitEthernet2
-    description: Uplink to spine-1
-    ipv4_address: 10.0.1.1/31
-    mtu: 9000
-  - name: GigabitEthernet3
-    description: Uplink to spine-2
-    ipv4_address: 10.0.1.3/31
-    mtu: 9000
-  - name: GigabitEthernet4
-    description: Unused
-    enabled: false
+  - name: "GE1/0/0"
+    description: "Uplink to spine-1.croc.lab"
+    enabled: true
+    mode: "l3"
+    ipv4_address: "10.0.1.1/31"
+    mtu: 1500
+
+  - name: "GE1/0/1"
+    description: "Uplink to spine-2.croc.lab"
+    enabled: true
+    mode: "l3"
+    ipv4_address: "10.0.1.5/31"
+    mtu: 1500
+
+  - name: "GE1/0/9"
+    description: "Client link to host-a"
+    enabled: true
+    mode: "l3"
+    # REASON: На host-a шлюз задан как 10.10.11.1, поэтому интерфейс настраивается этим адресом
+    ipv4_address: "10.10.11.1/24"
+    mtu: 1500
+
 bgp:
-  asn: 65101
-  router_id: 10.255.1.1
+  asn: 65101 # REASON: Выделенный приватный ASN для leaf-1
+  router_id: "10.255.0.11" # REASON: Идентификатор router-id Leaf1
   neighbors:
-    - peer_ip: 10.0.1.0
+    - peer_ip: "10.0.1.0"
       remote_asn: 65000
-      description: spine-1
-      password: fabric-secret
-      announced_prefixes: ["10.255.1.1/32"]
-    - peer_ip: 10.0.1.2
+      description: "spine-1.croc.lab"
+      announced_prefixes:
+        # REASON: Анонсируем клиентскую сеть host-a, чтобы она стала доступна в фабрике
+        - "10.10.11.0/24"
+        - "10.255.0.11/32"
+    - peer_ip: "10.0.1.4"
       remote_asn: 65000
-      description: spine-2
-      password: fabric-secret
-      announced_prefixes: ["10.255.1.1/32"]
-acls:
-  - name: MGMT-IN
-    rules:
-      - sequence: 10
-        action: permit
-        protocol: tcp
-        source: 172.20.20.0/24
-        destination: any
-      - sequence: 20
-        action: deny
-        protocol: ip
-        source: any
-        destination: any
+      description: "spine-2.croc.lab"
+      announced_prefixes:
+        - "10.10.11.0/24"
+        - "10.255.0.11/32"
+
+acls: []
