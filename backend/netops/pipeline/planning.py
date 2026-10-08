@@ -16,6 +16,8 @@ from netops.toolchain import Toolchain
 
 logger = logging.getLogger(__name__)
 
+_PLANNING_STAGES = 3
+
 
 def load_intent(toolchain: Toolchain, recorder: JobRecorder) -> IntentSnapshot:
     recorder.info("preflight", f"Validating intent repository {toolchain.intents.root}")
@@ -63,9 +65,12 @@ class ChangePlanner:
         self._toolchain = toolchain
         self._recorder = recorder
 
+    # Прогресс по этапам: рендер, сбор running-config, дифф. 100% ставит завершение задачи.
     def plan(self, devices: Sequence[Device], snapshot: IntentSnapshot) -> list[DevicePlan]:
         plans = [self._render(device, snapshot) for device in devices]
+        self._recorder.progress(1, _PLANNING_STAGES)
         self._collect([plan for plan in plans if plan.error is None])
+        self._recorder.progress(2, _PLANNING_STAGES)
         for plan in plans:
             if plan.error is not None:
                 self._recorder.error("plan", plan.error, hostname=plan.hostname)
