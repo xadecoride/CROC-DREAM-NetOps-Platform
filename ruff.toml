@@ -2,7 +2,7 @@
 # Бэкенд живёт по своему строгому конфигу в backend/pyproject.toml — он ближе к файлам.
 line-length = 100
 target-version = "py311"
-exclude = ["mobile", "frontend/dist", "frontend/node_modules"]
+exclude = ["frontend/dist", "frontend/node_modules"]
 
 [lint]
 # Для утилит важна корректность, а не форматирование: лимит длины строки не навязываем.
