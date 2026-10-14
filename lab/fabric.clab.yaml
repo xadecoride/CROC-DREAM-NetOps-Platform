@@ -1,0 +1,100 @@
+name: dc-clos-cisco-arista-huawei
+
+mgmt:
+  network: clab_mgmt
+  ipv4-subnet: 172.20.20.0/24
+  ipv6-subnet: 2001:172:20:20::/64
+
+topology:
+  nodes:
+    # ─── SPINE LAYER ───────────────────────────────────────────────
+    spine1:
+      kind: cisco_c8000v              # Cisco IOS-XE
+      image: windddkz/cisco_c8000v:17.03.08a
+      mgmt-ipv4: 172.20.20.5
+      startup-config: golden_configs/spine1.cfg
+      env:
+        CLAB_MGMT_PASSTHROUGH: "true"
+      ports:
+        - "2211:22"
+      exec:
+        - sh -c "iptables -t nat -C PREROUTING -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161 2>/dev/null || iptables -t nat -I PREROUTING 1 -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161"
+
+    spine2:
+      kind: arista_ceos               # Arista cEOS
+      image: ceosimage:4.32.0F
+      mgmt-ipv4: 172.20.20.4
+      startup-config: golden_configs/spine2.cfg
+      env:
+        CLAB_MGMT_PASSTHROUGH: "true"
+      ports:
+        - "2212:22"
+
+    # ─── LEAF LAYER ────────────────────────────────────────────────
+    leaf1:
+      kind: huawei_vrp
+      image: windddkz/huawei_vrp:ce12800-8.180
+      mgmt-ipv4: 172.20.20.2
+      startup-config: golden_configs/leaf1.cfg
+      env:
+        CLAB_MGMT_PASSTHROUGH: "true"
+      ports:
+        - "2221:22"
+      exec:
+        - sh -c "iptables -t nat -C PREROUTING -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161 2>/dev/null || iptables -t nat -I PREROUTING 1 -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161"
+
+    leaf2:
+      kind: huawei_vrp
+      image: windddkz/huawei_vrp:ce12800-8.180
+      mgmt-ipv4: 172.20.20.6
+      startup-config: golden_configs/leaf2.cfg
+      env:
+        CLAB_MGMT_PASSTHROUGH: "true"
+      ports:
+        - "2222:22"
+      exec:
+        - sh -c "iptables -t nat -C PREROUTING -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161 2>/dev/null || iptables -t nat -I PREROUTING 1 -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161"
+
+    # ─── HOSTS ─────────────────────────────────────────────────────
+    host-a:
+      kind: linux
+      image: alpine:latest
+      mgmt-ipv4: 172.20.20.10
+      exec:
+        - ip addr add 10.20.1.10/24 dev eth1
+        - ip link set eth1 up
+        - ip route add 10.0.0.0/8 via 10.20.1.1
+      ports:
+        - "2231:22"
+
+    host-b:
+      kind: linux
+      image: alpine:latest
+      mgmt-ipv4: 172.20.20.11
+      exec:
+        - ip addr add 10.20.2.10/24 dev eth1
+        - ip link set eth1 up
+        - ip route add 10.0.0.0/8 via 10.20.2.1
+      ports:
+        - "2232:22"
+
+  # ─── LINKS (Фабрика Clos + подключение серверов) ──────────────────
+  links:
+    # spine1 Gi2 (eth1) ↔ leaf1 GE1/0/0 (eth1) [10.10.0.0/31]
+    - endpoints: ["spine1:eth1", "leaf1:eth1"]
+
+    # spine1 Gi3 (eth2) ↔ leaf2 GE1/0/0 (eth1) [10.10.0.2/31]
+    - endpoints: ["spine1:eth2", "leaf2:eth1"]
+
+    # spine2 Eth1 (eth1) ↔ leaf1 GE1/0/1 (eth2) [10.10.0.4/31]
+    - endpoints: ["spine2:eth1", "leaf1:eth2"]
+
+    # spine2 Eth2 (eth2) ↔ leaf2 GE1/0/1 (eth2) [10.10.0.6/31]
+    - endpoints: ["spine2:eth2", "leaf2:eth2"]
+
+    # leaf1 GE1/0/9 (eth10) ↔ host-a (eth1) [10.20.1.0/24]
+    - endpoints: ["leaf1:eth10", "host-a:eth1"]
+
+    # leaf2 GE1/0/9 (eth10) ↔ host-b (eth1) [10.20.2.0/24]
+    - endpoints: ["leaf2:eth10", "host-b:eth1"]
+
