@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -16,7 +17,11 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    return config.get_main_option("sqlalchemy.url") or get_settings().database_url
+    return (
+        config.get_main_option("sqlalchemy.url")
+        or os.environ.get("NETOPS_DATABASE_URL")
+        or get_settings().database_url
+    )
 
 
 def run_migrations_offline() -> None:

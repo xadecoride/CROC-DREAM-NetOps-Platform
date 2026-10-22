@@ -1,6 +1,5 @@
 {% for acl in intent.acls %}
 acl name {{ acl.name }} advance
-{% set rules_seq = acl.rules | map(attribute="sequence") | list %}
 {% for rule in acl.rules %}
 {% if rule.dst_port is defined and rule.dst_port %}
  rule {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} destination-port eq {{ rule.dst_port }}
@@ -8,9 +7,6 @@ acl name {{ acl.name }} advance
  rule {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} source-port eq {{ rule.src_port }}
 {% else %}
  rule {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }}
-{% endif %}
-{% if rule.sequence == 10 and 15 not in rules_seq %}
- rule 15 permit ospf
 {% endif %}
 {% endfor %}
 {% endfor %}

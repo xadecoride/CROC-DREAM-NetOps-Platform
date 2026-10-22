@@ -17,8 +17,8 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 # Значения enum зафиксированы в миграции, чтобы она не менялась вместе с кодом.
-PLATFORMS = ("cisco_iosxe", "arista_eos", "huawei_vrp")
-DEVICE_ROLES = ("spine", "leaf", "border")
+PLATFORMS = ("cisco_iosxe", "arista_eos", "huawei_vrp", "linux_server")
+DEVICE_ROLES = ("spine", "leaf", "border", "server")
 DEVICE_STATUSES = ("UNKNOWN", "IN_SYNC", "DRIFT_DETECTED", "UNREACHABLE", "IN_PROGRESS")
 JOB_TYPES = ("DRY_RUN", "DEPLOY", "DRIFT_SCAN", "DRIFT_REMEDIATE")
 JOB_STATUSES = ("PENDING", "RUNNING", "SUCCESS", "FAILED")

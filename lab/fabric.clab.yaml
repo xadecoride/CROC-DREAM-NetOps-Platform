@@ -17,6 +17,7 @@ topology:
         CLAB_MGMT_PASSTHROUGH: "true"
       ports:
         - "2211:22"
+        - "1611:161/udp"
       exec:
         - sh -c "iptables -t nat -C PREROUTING -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161 2>/dev/null || iptables -t nat -I PREROUTING 1 -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161"
 
@@ -29,17 +30,20 @@ topology:
         CLAB_MGMT_PASSTHROUGH: "true"
       ports:
         - "2212:22"
+        - "1612:161/udp"
+        - "6032:6030/tcp"
 
     # ─── LEAF LAYER ────────────────────────────────────────────────
     leaf1:
       kind: huawei_vrp
       image: windddkz/huawei_vrp:ce12800-8.180
       mgmt-ipv4: 172.20.20.2
-      #startup-config: golden_configs/leaf1.cfg  -  с ним ломается, после запуска запускаем ./reset_lab.sh
+      startup-config: golden_configs/leaf1.cfg
       env:
         CLAB_MGMT_PASSTHROUGH: "true"
       ports:
         - "2221:22"
+        - "1621:161/udp"
       exec:
         - sh -c "iptables -t nat -C PREROUTING -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161 2>/dev/null || iptables -t nat -I PREROUTING 1 -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161"
 
@@ -47,11 +51,12 @@ topology:
       kind: huawei_vrp
       image: windddkz/huawei_vrp:ce12800-8.180
       mgmt-ipv4: 172.20.20.6
-      #startup-config: golden_configs/leaf2.cfg  -  с ним ломается, после запуска запускаем ./reset_lab.sh
+      startup-config: golden_configs/leaf2.cfg
       env:
         CLAB_MGMT_PASSTHROUGH: "true"
       ports:
         - "2222:22"
+        - "1622:161/udp"
       exec:
         - sh -c "iptables -t nat -C PREROUTING -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161 2>/dev/null || iptables -t nat -I PREROUTING 1 -i eth0 -p udp --dport 161 -j DNAT --to-destination 10.0.0.15:161"
 

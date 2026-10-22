@@ -1,22 +1,82 @@
 #!/usr/bin/env bash
-LAB="clab-dc-clos-cisco-arista-huawei"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TOPO_NAME=$(awk '/^name:/ {print $2; exit}' "${SCRIPT_DIR}/fabric.clab.yaml" 2>/dev/null)
+LAB="${CLAB_LAB_NAME:-clab-${TOPO_NAME:-dc-clos-cisco-arista-huawei}}"
+SPINE1_CREDS=$(awk '/^username / && /password / {for(i=1;i<=NF;i++) if($i=="password") print $2":"$(i+2); exit}' "${SCRIPT_DIR}/golden_configs/spine1.cfg" 2>/dev/null)
+CISCO_USER="${SPINE1_CREDS%%:*}"
+CISCO_PASS="${SPINE1_CREDS#*:}"
+CISCO_USER="${CISCO_USER:-${CLAB_DEFAULT_USER:-admin}}"
+CISCO_PASS="${CISCO_PASS:-${CLAB_DEFAULT_PASS:-admin}}"
 
 # --- Функции опроса оборудования ---
+RAW_TELNET_PY='
+import re, socket, sys, time
+
+class RawTelnet:
+    def __init__(self, host, port, timeout=8.0):
+        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.sock.settimeout(timeout)
+        self.buf = bytearray()
+
+    def write(self, data):
+        self.sock.sendall(data)
+
+    def read_very_eager(self):
+        self.sock.setblocking(False)
+        out = bytearray()
+        try:
+            while True:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    break
+                out.extend(chunk)
+        except (BlockingIOError, OSError):
+            pass
+        finally:
+            self.sock.setblocking(True)
+        return bytes(out)
+
+    def expect(self, patterns, timeout=2.0):
+        self.sock.settimeout(timeout)
+        compiled = [re.compile(p) for p in patterns]
+        start = time.time()
+        while time.time() - start < timeout:
+            for idx, pat in enumerate(compiled):
+                m = pat.search(self.buf)
+                if m:
+                    end = m.end()
+                    matched = bytes(self.buf[:end])
+                    del self.buf[:end]
+                    return idx, m, matched
+            try:
+                chunk = self.sock.recv(1024)
+                if not chunk:
+                    break
+                self.buf.extend(chunk)
+            except (socket.timeout, BlockingIOError, OSError):
+                break
+        return -1, None, bytes(self.buf)
+
+    def close(self):
+        self.sock.close()
+'
+
 cisco() {
-  docker exec -i ${LAB}-spine1 python3 -W ignore -c "
-import telnetlib, time
-tn = telnetlib.Telnet('127.0.0.1', 5000, timeout=8)
+  docker exec -i "${LAB}-spine1" python3 -W ignore -c "${RAW_TELNET_PY}
+user = '''${CISCO_USER}'''.encode() + b'\r\n'
+pw = '''${CISCO_PASS}'''.encode() + b'\r\n'
+tn = RawTelnet('127.0.0.1', 5000, timeout=8)
 tn.write(b'\r\n\r\n')
 time.sleep(0.3)
 for _ in range(5):
     idx, _, _ = tn.expect([br'[Uu]sername:', br'[Pp]assword:', br'#', br'>'], timeout=2)
-    if idx == 0: tn.write(b'admin\r\n')
-    elif idx == 1: tn.write(b'F5ga6jfkig1\r\n')
+    if idx == 0: tn.write(user)
+    elif idx == 1: tn.write(pw)
     elif idx == 2: break
     elif idx == 3:
         tn.write(b'enable\r\n')
         if tn.expect([br'[Pp]assword:', br'#'], timeout=2)[0] == 0:
-            tn.write(b'F5ga6jfkig1\r\n')
+            tn.write(pw)
         break
 tn.write(b'terminal length 0\r\n$1\r\n')
 time.sleep(0.8)
@@ -30,9 +90,8 @@ arista() {
 }
 
 huawei() {
-  docker exec -i ${LAB}-$1 python3 -W ignore -c "
-import telnetlib, time
-tn = telnetlib.Telnet('127.0.0.1', 5000, timeout=8)
+  docker exec -i ${LAB}-$1 python3 -W ignore -c "${RAW_TELNET_PY}
+tn = RawTelnet('127.0.0.1', 5000, timeout=8)
 tn.write(b'\x1a\r\nscreen-length 0 temporary\r\n$2\r\n')
 time.sleep(0.8)
 print(tn.read_very_eager().decode('utf-8', errors='ignore'))

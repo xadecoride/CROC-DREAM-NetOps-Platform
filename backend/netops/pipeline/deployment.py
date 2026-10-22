@@ -10,6 +10,7 @@ from netops.enums import DeviceStatus, DriftStatus, TargetStatus
 from netops.models import Device, DriftRecord, JobTarget, sha256_hex
 from netops.network.base import ChangePlan, DeviceTarget, HealthExpectations, HealthSnapshot
 from netops.network.health import HealthVerdict, evaluate_health
+from netops.network.ssh_locks import SSHLockUnavailableError
 from netops.pipeline.recorder import JobRecorder
 from netops.toolchain import Toolchain
 
@@ -56,6 +57,13 @@ class DeploymentExecutor:
         )
         try:
             self._toolchain.deployer.apply(target, plan, confirm_timeout=timeout)
+        except SSHLockUnavailableError as exc:
+            return self._fail(
+                row,
+                device,
+                previous_status,
+                f"Apply aborted (SSH lock busy — no changes sent): {exc}",
+            )
         except Exception as exc:
             rolled_back = self._rollback(device, target, plan)
             status = previous_status if rolled_back else DeviceStatus.UNKNOWN
@@ -80,6 +88,13 @@ class DeploymentExecutor:
 
         try:
             self._toolchain.deployer.confirm(target)
+        except SSHLockUnavailableError as exc:
+            return self._fail(
+                row,
+                device,
+                DeviceStatus.UNKNOWN,
+                f"Commit confirmation failed (SSH lock busy: {exc}); the device reverts when the timer expires",
+            )
         except Exception as exc:
             return self._fail(
                 row,
@@ -128,7 +143,27 @@ class DeploymentExecutor:
             time.sleep(interval)
             attempt += 1
             verdict = self._check_health(target, before, expectations)
+
+        if not verdict.healthy:
+            return verdict
+
+        # Telemetry Guard: detect silent operational failures, blackholes & storms
+        if getattr(self._toolchain, "ai_guard", None) is not None:
+            self._recorder.info(
+                "ai-guard", "Telemetry Guard: Verifying telemetry envelope during trial window", hostname=device.hostname
+            )
+            ai_verdict = self._toolchain.ai_guard.verify_execution(device)
+            if not ai_verdict.healthy:
+                self._recorder.error(
+                    "ai-guard", f"Telemetry anomaly: {ai_verdict.problem}", hostname=device.hostname
+                )
+                return HealthVerdict((f"Telemetry Guard: {ai_verdict.problem}",))
+            self._recorder.info(
+                "ai-guard", f"Telemetry Guard: {ai_verdict.message}", hostname=device.hostname
+            )
+
         return verdict
+
 
     def _check_health(
         self,
@@ -169,12 +204,44 @@ class DeploymentExecutor:
         self._recorder.warning("rollback", "Rolling back the change", hostname=device.hostname)
         try:
             self._toolchain.deployer.rollback(target, plan)
+        except SSHLockUnavailableError as exc:
+            logger.warning("Rollback SSH lock unavailable on %s: %s", device.hostname, exc)
+            self._recorder.error(
+                "rollback",
+                f"Rollback failed (SSH lock busy): {exc}",
+                hostname=device.hostname,
+            )
+            return False
         except Exception as exc:
             logger.warning("Rollback failed on %s", device.hostname, exc_info=True)
             self._recorder.error("rollback", f"Rollback failed: {exc}", hostname=device.hostname)
             return False
+
+        # Two-Phase Rollback Protection: engage sync_lock on rolled-back device & fabric
+        try:
+            from netops.services.state import get_state_manager
+
+            state_mgr = get_state_manager()
+            job_obj = getattr(self._recorder, "_job", None)
+            job_id_str = str(getattr(job_obj, "id", None) or getattr(plan, "job_id", None) or "rollback")
+            holder_id = f"rollback:{job_id_str}"
+            reason = "Two-Phase Rollback: target rolled back; locked pending SoT reconciliation"
+            if device.id is not None:
+                state_mgr.acquire_sync_lock(f"device:{device.id}", holder=holder_id, ttl=600, reason=reason)
+            state_mgr.acquire_sync_lock(f"device:{device.hostname}", holder=holder_id, ttl=600, reason=reason)
+            if getattr(device, "fabric_id", None):
+                state_mgr.acquire_sync_lock(f"fabric:{device.fabric_id}", holder=holder_id, ttl=600, reason=reason)
+            self._recorder.warning(
+                "rollback",
+                f"Sync lock engaged on device:{device.id} and fabric:{getattr(device, 'fabric_id', None)} (TTL 600s)",
+                hostname=device.hostname,
+            )
+        except Exception as lock_exc:
+            logger.warning("Failed to engage sync_lock on %s: %s", device.hostname, lock_exc)
+
         self._recorder.info("rollback", "Change rolled back", hostname=device.hostname)
         return True
+
 
     def _fail(self, row: JobTarget, device: Device, status: DeviceStatus, reason: str) -> bool:
         row.mark(TargetStatus.FAILED, reason)

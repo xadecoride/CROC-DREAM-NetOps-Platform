@@ -1,0 +1,37 @@
+interfaces {
+{% for iface in intent.interfaces %}
+{% if iface.name.startswith("Loopback") %}
+    lo0 {
+        unit 0 {
+{% if iface.description %}
+            description "{{ iface.description }}";
+{% endif %}
+{% if iface.ipv4_address %}
+            family inet {
+                address {{ iface.ipv4_address.with_prefixlen }};
+            }
+{% endif %}
+        }
+    }
+{% else %}
+    {{ iface.name }} {
+{% if iface.description %}
+        description "{{ iface.description }}";
+{% endif %}
+{% if iface.mtu != 1500 %}
+        mtu {{ iface.mtu }};
+{% endif %}
+{% if not iface.enabled %}
+        disable;
+{% endif %}
+        unit 0 {
+{% if iface.ipv4_address %}
+            family inet {
+                address {{ iface.ipv4_address.with_prefixlen }};
+            }
+{% endif %}
+        }
+    }
+{% endif %}
+{% endfor %}
+}

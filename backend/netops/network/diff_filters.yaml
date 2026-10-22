@@ -13,6 +13,7 @@ common:
     - no shutdown
     huawei_vrp:
     - undo shutdown
+    - traffic-filter inbound acl name FABRIC-IN
     eltex_esr: []
 platforms:
   cisco_iosxe:
@@ -48,6 +49,9 @@ platforms:
       confidence: high
     - re: ^end$
       why: конец файла
+      confidence: high
+    - re: ^\s*no mop (enabled|sysid)$
+      why: дефолт интерфейсов Cisco c8000v
       confidence: high
     drop_blocks:
     - start_re: ^crypto pki (trustpoint|certificate chain) TP-self-signed-\d+
@@ -137,10 +141,16 @@ platforms:
     - re: ^return$
       why: конец конфигурации
       confidence: high
+    - re: ^\s*(?:undo )?synchronization$
+      why: дефолт BGP ipv4-family на CE12800 8.180
+      confidence: high
     drop_blocks:
     - start_re: ^ip vpn-instance __LOCAL_OAM_VPN__
       why: служебный VPN, создаётся системой (если присутствует)
       confidence: low
+    - start_re: ^interface (?:GE1/0/[2-9]|NULL0)$
+      why: неиспользуемые заводские порты CE12800
+      confidence: high
     mask_secrets:
     - re: ^(\s*local-user \S+ password (?:irreversible-cipher|cipher)) \S+
       replace: \1 <hash>
@@ -184,6 +194,7 @@ platforms:
     - ^interface (?!gigabitethernet 1/0/0$)
     - '^router bgp '
     - '^route-map '
+    - '^ip access-list '
     unmanaged_examples:
     - management-интерфейс
     - username
@@ -192,6 +203,56 @@ platforms:
     - logging
     - snmp
     note: 'Все шаблоны этого раздела предположительные: снять реальный show running-config с ESR и пройти по нему.'
+  eltex_mes:
+    indent: 1 space per level
+    comment_prefix: '!'
+    drop_line_patterns:
+    - re: ^exit$
+      why: конец секции
+      confidence: medium
+    drop_blocks: []
+    mask_secrets: []
+    managed_sections:
+    - '^hostname '
+    - ^interface (?!oob$)
+    - '^router bgp '
+    - '^ip access-list '
+  juniper_junos:
+    indent: 4 spaces per level
+    comment_prefix: '#'
+    drop_line_patterns:
+    - re: ^## Last commit:.*
+      why: метка времени коммита
+      confidence: high
+    drop_blocks: []
+    mask_secrets: []
+    managed_sections:
+    - ^system
+    - ^interfaces
+    - ^protocols
+    - ^firewall
+    - ^routing-options
+  yadro_kornfe:
+    indent: 2 spaces per level
+    comment_prefix: '#'
+    drop_line_patterns: []
+    drop_blocks: []
+    mask_secrets: []
+    managed_sections:
+    - '^hostname '
+    - '^interface '
+    - '^router bgp '
+    - '^ip access-list '
+  linux_server:
+    indent: 2 spaces per level
+    comment_prefix: '#'
+    drop_line_patterns: []
+    drop_blocks: []
+    mask_secrets: []
+    managed_sections:
+    - ^auto
+    - ^iface
+    - ^hostname
 dynamic_show_output_fields:
   always_ignore:
   - uptime

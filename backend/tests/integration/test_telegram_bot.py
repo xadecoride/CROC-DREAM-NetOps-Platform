@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any
 
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
 from netops.db import utcnow
-from netops.enums import DeviceStatus, DriftStatus, JobStatus, JobType
-from netops.models import Device, DriftRecord, Job
+from netops.enums import DeviceStatus, DriftStatus, JobStatus, JobType, UserRole
+from netops.models import Device, DriftRecord, Job, User
+from netops.security import hash_token
 from netops.telemetry import collector, metrics
 from netops.telemetry.bot import MetricsBot
 
@@ -108,8 +108,7 @@ def test_status_and_drift_show_the_current_state(
 def test_metrics_command_reports_problems(
     session_factory: sessionmaker[Session], session: Session, devices: dict[str, Device]
 ) -> None:
-    collector.store(
-        session,
+    collector.publish(
         [
             metrics.Sample(metrics.DRIFT_DEVICES, 1),
             metrics.Sample(metrics.DEVICE_REACHABLE, 0, {"hostname": "leaf-1.croc.lab"}),
@@ -119,7 +118,6 @@ def test_metrics_command_reports_problems(
                 {"hostname": "leaf-1.croc.lab", "peer": "10.0.1.0", "state": "Active"},
             ),
         ],
-        retention=timedelta(days=1),
     )
     api = FakeTelegram([_command("/metrics")])
     _bot(session_factory, api).poll_once()
@@ -177,8 +175,7 @@ def test_catch_up_skips_what_happened_before_the_start(
 def test_metrics_command_shows_numbers_when_everything_is_fine(
     session_factory: sessionmaker[Session], session: Session, devices: dict[str, Device]
 ) -> None:
-    collector.store(
-        session,
+    collector.publish(
         [
             metrics.Sample(metrics.DEVICES_TOTAL, 4, {"status": "IN_SYNC"}),
             metrics.Sample(metrics.DEVICE_REACHABLE, 1, {"hostname": "leaf-1.croc.lab"}),
@@ -196,7 +193,6 @@ def test_metrics_command_shows_numbers_when_everything_is_fine(
                 metrics.PING_LOSS, 0, {"hostname": "leaf-1.croc.lab", "peer": "10.0.1.0"}
             ),
         ],
-        retention=timedelta(days=1),
     )
     api = FakeTelegram([_command("/metrics")])
     _bot(session_factory, api).poll_once()
@@ -223,7 +219,7 @@ def test_repeated_drift_is_reported_once(
         bot.send_alerts()
 
     assert [text for _, text in api.sent] == [
-        "⚠️ leaf-1.croc.lab: DRIFT_DETECTED\nлишних строк: 1, не хватает: 0"
+        "[ALERT] leaf-1.croc.lab: DRIFT_DETECTED\nлишних строк: 1, не хватает: 0"
     ]
 
 
@@ -244,10 +240,30 @@ def test_recovery_and_new_status_are_reported(
 
     statuses = [text.splitlines()[0] for _, text in api.sent]
     assert statuses == [
-        "⚠️ leaf-1.croc.lab: DRIFT_DETECTED",
-        "✅ leaf-1.croc.lab: снова совпадает с эталоном",
-        "⚠️ leaf-1.croc.lab: UNREACHABLE",
+        "[ALERT] leaf-1.croc.lab: DRIFT_DETECTED",
+        "[OK] leaf-1.croc.lab: снова совпадает с эталоном",
+        "[ALERT] leaf-1.croc.lab: UNREACHABLE",
     ]
+
+
+def test_callback_query_button_dispatches_command(
+    session_factory: sessionmaker[Session], devices: dict[str, Device]
+) -> None:
+    api = FakeTelegram(
+        [
+            {
+                "update_id": 10,
+                "callback_query": {
+                    "id": "cb-1",
+                    "data": "/status",
+                    "message": {"chat": {"id": CHAT_ID}},
+                },
+            }
+        ]
+    )
+    _bot(session_factory, api).poll_once()
+    assert len(api.sent) == 1
+    assert "Устройств: 4" in api.sent[0][1]
 
 
 def test_same_job_error_is_not_repeated(
@@ -274,14 +290,85 @@ def test_same_job_error_is_not_repeated(
     assert "2 of 4 device(s) failed" in api.sent[0][1]
 
 
-def test_drift_command_shows_only_current_state(
+def test_owner_bot_commands_manage_users_and_access(
     session_factory: sessionmaker[Session], session: Session, devices: dict[str, Device]
 ) -> None:
-    device = devices["leaf-1.croc.lab"]
-    _drift(session, device, DriftStatus.DRIFT_DETECTED, unauthorized_lines=["interface Lo99"])
-    _drift(session, device, DriftStatus.IN_SYNC)
+    u = User(
+        username="jury-1",
+        role=UserRole.VIEWER,
+        token_sha256=hash_token("secret-jury-token"),
+        is_active=True,
+        allowed_system="spine-1.croc.lab",
+        bound_client_id="dev-abc123",
+        bound_ip="192.168.1.50",
+    )
+    session.add(u)
+    session.commit()
 
-    api = FakeTelegram([_command("/drift")])
+    api = FakeTelegram(
+        [
+            _command("/users", update_id=1),
+            _command("/block jury-1", update_id=2),
+            _command("/unblock jury-1", update_id=3),
+            _command("/role jury-1 operator", update_id=4),
+            _command("/unbind jury-1", update_id=5),
+        ]
+    )
     _bot(session_factory, api).poll_once()
 
-    assert "Дрейфа нет" in api.texts()
+    out = api.texts()
+    assert "[ACTIVE] jury-1 [viewer] · система: spine-1.croc.lab" in out
+    assert "Доступ для jury-1 ограничен" in out
+    assert "Доступ для jury-1 возобновлён" in out
+    assert "Роль для jury-1 изменена на operator" in out
+    assert "Привязка устройства для jury-1 сброшена" in out
+
+    session.expire_all()
+    updated = session.get_one(User, u.id)
+    assert updated.is_active is True
+    assert updated.role == UserRole.OPERATOR
+    assert updated.bound_client_id is None
+
+
+def test_bot_subscriber_without_user_row_defaults_to_viewer_and_ai_guard_alerts(
+    session_factory: sessionmaker[Session], session: Session, devices: dict[str, Device]
+) -> None:
+    from netops.services.ai_guard import AiTelemetryGuard
+
+    api = FakeTelegram(
+        [
+            _command("/users", update_id=1, chat_id=777),
+            _command("/fabrics", update_id=2, chat_id=777),
+        ]
+    )
+    bot = MetricsBot(
+        session_factory,
+        api,
+        chat_ids=[CHAT_ID, 777],
+        admin_chat_ids=[CHAT_ID],
+    )
+    bot.catch_up()
+    bot.poll_once()
+
+    out = api.texts()
+    assert "Недостаточно прав" in out
+    assert "Zero-Secret Chat" in out
+
+    # Proactive silent anomaly alert via send_alerts()
+    api.sent.clear()
+    AiTelemetryGuard.inject_anomaly("leaf-1.croc.lab", "blackhole")
+    bot.send_alerts()
+    bot.send_alerts()  # Should not duplicate
+    alert_texts = [t for cid, t in api.sent if cid == CHAT_ID]
+    assert len(alert_texts) == 1
+    assert "[AI GUARD ALERT] leaf-1.croc.lab" in alert_texts[0]
+
+    # Recovery notification when anomaly clears
+    api.sent.clear()
+    AiTelemetryGuard.inject_anomaly("leaf-1.croc.lab", "clear")
+    bot.send_alerts()
+    rec_texts = [t for cid, t in api.sent if cid == CHAT_ID]
+    assert len(rec_texts) == 1
+    assert "телеметрия вернулась в норму (AI Guard)" in rec_texts[0]
+
+

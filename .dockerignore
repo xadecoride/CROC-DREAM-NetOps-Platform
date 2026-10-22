@@ -1,0 +1,17 @@
+lab/running/*.json
+lab/running/*.jsonl
+lab/running/*.cfg
+intent/diffs/*
+backend/.venv
+backend/.env
+backend/.env.*
+!backend/.env.example
+*.db
+*.sqlite
+frontend/node_modules
+frontend/dist
+**/__pycache__
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.agents

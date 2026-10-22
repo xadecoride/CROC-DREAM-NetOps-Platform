@@ -1,0 +1,31 @@
+{% for acl in intent.acls %}
+firewall {
+    family inet {
+        filter {{ acl.name }} {
+{% for rule in acl.rules %}
+            term term-{{ rule.sequence }} {
+                from {
+{% if rule.source != "any" %}
+                    source-address {
+                        {{ rule.source }};
+                    }
+{% endif %}
+{% if rule.destination != "any" %}
+                    destination-address {
+                        {{ rule.destination }};
+                    }
+{% endif %}
+                }
+                then {
+{% if rule.action == "permit" %}
+                    accept;
+{% else %}
+                    discard;
+{% endif %}
+                }
+            }
+{% endfor %}
+        }
+    }
+}
+{% endfor %}

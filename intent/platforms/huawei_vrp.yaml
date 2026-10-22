@@ -1,8 +1,11 @@
+# ==============================================================================
+# БЛОК 1: ИДЕНТИФИКАЦИЯ СТЕНДА И ВЕНДОРА (TCP / SSH / CLI ТРИГГЕРЫ)
+# ==============================================================================
 platform: huawei_vrp
 vendor: Huawei Technologies
-default_password: admin
+default_password: F5ga6jfkig
 default_interface: GE1/0/0
-offline_ports: [2221, 2222, 2003, 2004]
+offline_ports: [2221]
 offline_interfaces:
   - GE1/0/0
   - GE1/0/1
@@ -15,6 +18,10 @@ version_signatures:
   - Huawei
   - VRP
   - HUAWEI
+
+# ==============================================================================
+# БЛОК 2: ИНСПЕКЦИЯ ТОПОЛОГИИ И КОНФИГУРАЦИИ (DISCOVERY & DRIFT ENGINE)
+# ==============================================================================
 interface_prefixes:
   - GE
   - Gigabit
@@ -27,10 +34,58 @@ lldp_port_prefixes:
 commands:
   version: display version
   memory: display memory
+  cpu: display cpu
   running_config: display current-configuration
   hostname_filter: display current-configuration | include sysname
   interfaces_brief: display ip interface brief
   lldp_neighbors: display lldp neighbor brief
+  bgp_summary: display bgp peer
+
+# Порядок секций в эталоне = порядок вывода `display current-configuration` на устройстве
+# (ACL идут сразу после sysname). Иначе сравнение показывает ложный дрейф.
+render_order: [base, acls, interfaces, bgp]
+
+# ==============================================================================
+# БЛОК 3: ТРИГГЕРЫ ПРОТОКОЛОВ ТЕЛЕМЕТРИИ И КАСКАД ПРИОРИТЕТОВ (CAPABILITIES)
+# ==============================================================================
+gnmi:
+  default_port: 57400
+  check_command: display grpc
+  match_tokens:
+    - enabled
+    - active
+    - running
+    - "57400"
+    - grpc
+snmp:
+  base_port: 161
+  clab_offset: -600
+  hardware_module: huawei_cpu
+exporter:
+  port: 9100
+  path: /metrics
+protocol_priority:
+  - gnmi
+  - snmp
+  - ssh_cli
+
+# ==============================================================================
+# БЛОК 4: КАСТОМНЫЙ SSH CLI СБОРЩИК МЕТРИК (POOLED SSH FALLBACK ENGINE)
+# ==============================================================================
+telemetry:
+  cpu_pct:
+    command: display cpu
+    parser: parse_huawei_cpu
+  memory_pct:
+    command: display memory
+    parser: parse_huawei_memory
+  uplink_util_pct:
+    command: display interface brief
+    parser: max_huawei_link_utilization
+
+# ==============================================================================
+# БЛОК 5: АВАРИЙНОЕ УПРАВЛЕНИЕ (EMERGENCY HUB)
+# ==============================================================================
 emergency_commands:
   reset_bgp_sessions: reset bgp all
   rollback_last_commit: rollback configuration last 1

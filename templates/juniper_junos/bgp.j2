@@ -1,0 +1,25 @@
+{% if intent.bgp %}
+protocols {
+    bgp {
+        group CLOS-FABRIC {
+            type external;
+            local-as {{ intent.bgp.asn }};
+{% for neighbor in intent.bgp.neighbors %}
+            neighbor {{ neighbor.peer_ip }} {
+{% if neighbor.description %}
+                description "{{ neighbor.description }}";
+{% endif %}
+                peer-as {{ neighbor.remote_asn }};
+{% if neighbor.password %}
+                authentication-key "{{ neighbor.password }}";
+{% endif %}
+            }
+{% endfor %}
+        }
+    }
+}
+routing-options {
+    router-id {{ intent.bgp.router_id }};
+    autonomous-system {{ intent.bgp.asn }};
+}
+{% endif %}

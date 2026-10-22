@@ -40,3 +40,17 @@ def test_downgrade_removes_everything(alembic_config: Config) -> None:
     engine = build_engine(alembic_config.get_main_option("sqlalchemy.url") or "")
     assert inspect(engine).get_table_names() == ["alembic_version"]
     engine.dispose()
+
+
+def test_upgrade_when_system_state_already_exists(alembic_config: Config) -> None:
+    from netops.models.system_state import SystemState
+
+    command.upgrade(alembic_config, "0006")
+    engine = build_engine(alembic_config.get_main_option("sqlalchemy.url") or "")
+    SystemState.__table__.create(bind=engine, checkfirst=True)
+    engine.dispose()
+
+    command.upgrade(alembic_config, "head")
+    engine = build_engine(alembic_config.get_main_option("sqlalchemy.url") or "")
+    assert "system_state" in inspect(engine).get_table_names()
+    engine.dispose()

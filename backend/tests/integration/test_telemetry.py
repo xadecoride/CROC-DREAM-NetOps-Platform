@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from netops.db import utcnow
 from netops.enums import DeviceStatus, JobStatus, JobType, UserRole
-from netops.models import Device, Job, MetricSample
+from netops.models import Device, Job
+from netops.services.state import get_state_manager
 from netops.telemetry import collector, metrics
 from netops.telemetry.metrics import Sample
 from netops.toolchain import Toolchain
 from tests.conftest import auth
-
-RETENTION = timedelta(days=7)
 
 
 def _values(samples: list[Sample], name: str) -> dict[tuple[tuple[str, str], ...], float]:
@@ -87,20 +84,43 @@ def test_device_samples_come_from_the_lab(
     assert set(_values(samples, metrics.PING_LOSS).values()) == {0.0}
 
 
-def test_store_keeps_one_snapshot_and_drops_old_samples(session: Session) -> None:
-    session.add(
-        MetricSample(
-            name=metrics.DRIFT_DEVICES, labels={}, value=9, collected_at=utcnow() - RETENTION * 2
-        )
+def test_publish_replaces_snapshot_and_respects_ttl() -> None:
+    collector.publish([Sample(metrics.DRIFT_DEVICES, 9)])
+    collected_at = collector.publish(
+        [
+            Sample(metrics.DRIFT_DEVICES, 1, {"fabric_id": "dc1"}),
+            Sample(
+                metrics.DEVICE_CPU_UTIL,
+                23.5,
+                {"hostname": "spine-1.croc.lab", "fabric_id": "dc1"},
+            ),
+        ]
     )
-    session.commit()
 
-    collected_at = collector.store(session, [Sample(metrics.DRIFT_DEVICES, 1)], retention=RETENTION)
-
-    assert session.scalars(select(MetricSample.value)).all() == [1]
-    samples, latest_at = collector.latest(session)
+    samples, latest_at = collector.latest()
     assert latest_at == collected_at
-    assert samples == [Sample(metrics.DRIFT_DEVICES, 1.0, {})]
+    assert len(samples) == 2
+
+    host_samples, host_at = collector.latest_for_host("spine-1.croc.lab")
+    assert host_at == collected_at
+    assert host_samples == [
+        Sample(
+            metrics.DEVICE_CPU_UTIL,
+            23.5,
+            {"hostname": "spine-1.croc.lab", "fabric_id": "dc1"},
+        )
+    ]
+    fab_samples, fab_at = collector.latest_for_fabric("dc1")
+    assert fab_at == collected_at
+    assert len(fab_samples) == 2
+
+    # Истёкший срез не должен отдаваться как «живой».
+    collector.publish([Sample(metrics.DRIFT_DEVICES, 2)], ttl_seconds=60)
+    state = get_state_manager()
+    expires_at, raw = state._local_kv[collector.LATEST_SNAPSHOT_KEY]
+    assert expires_at is not None
+    state._local_kv[collector.LATEST_SNAPSHOT_KEY] = (0.0, raw)
+    assert collector.latest() == ([], None)
 
 
 def test_metrics_endpoint_needs_no_token(
@@ -108,7 +128,7 @@ def test_metrics_endpoint_needs_no_token(
 ) -> None:
     assert client.get("/metrics").text == ""
 
-    collector.store(session, collector.platform_samples(session), retention=RETENTION)
+    collector.publish(collector.platform_samples(session))
     response = client.get("/metrics")
 
     assert response.status_code == 200
@@ -121,3 +141,19 @@ def test_metrics_endpoint_needs_no_token(
 
 def test_metrics_endpoint_is_not_hidden_from_viewers(client: TestClient) -> None:
     assert client.get("/metrics", headers=auth(UserRole.VIEWER)).status_code == 200
+
+
+def test_telemetry_collect_and_collectors_endpoints(
+    client: TestClient, devices: dict[str, Device]
+) -> None:
+    res = client.post("/api/v1/telemetry/collect", headers=auth(UserRole.OPERATOR))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "ok"
+    assert body["samples_collected"] > 0
+    assert metrics.DEVICES_TOTAL in client.get("/metrics").text
+
+    collectors_res = client.get("/api/v1/telemetry/collectors", headers=auth(UserRole.VIEWER))
+    assert collectors_res.status_code == 200
+    assert "protocols" in collectors_res.json()
+

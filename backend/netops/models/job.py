@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
-from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from netops.db import Base, enum_type, utcnow
@@ -26,6 +26,7 @@ ALLOWED_TRANSITIONS: Final[Mapping[JobStatus, frozenset[JobStatus]]] = {
 
 class Job(Base):
     __tablename__ = "jobs"
+    __table_args__ = (Index("ix_jobs_type_status", "type", "status"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     type: Mapped[JobType] = mapped_column(enum_type(JobType), index=True)
@@ -80,7 +81,7 @@ class JobTarget(Base):
         ForeignKey("devices.id", ondelete="SET NULL"), index=True
     )
     # hostname дублируем, чтобы история задач сохранялась после удаления устройства.
-    hostname: Mapped[str] = mapped_column(String(253))
+    hostname: Mapped[str] = mapped_column(String(253), index=True)
     status: Mapped[TargetStatus] = mapped_column(
         enum_type(TargetStatus), default=TargetStatus.PENDING
     )
@@ -119,7 +120,7 @@ class JobLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     job_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
-    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
     level: Mapped[LogLevel] = mapped_column(enum_type(LogLevel), default=LogLevel.INFO)
     step: Mapped[str] = mapped_column(String(64))
     hostname: Mapped[str | None] = mapped_column(String(253))

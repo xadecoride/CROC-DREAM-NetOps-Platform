@@ -1,0 +1,12 @@
+{% for iface in intent.interfaces %}
+interface {{ iface.name }}
+{% if iface.description %}
+  description {{ iface.description }}
+{% endif %}
+{% if iface.ipv4_address %}
+  ip address {{ iface.ipv4_address.with_prefixlen }}
+{% endif %}
+{% if not iface.enabled %}
+  shutdown
+{% endif %}
+{% endfor %}

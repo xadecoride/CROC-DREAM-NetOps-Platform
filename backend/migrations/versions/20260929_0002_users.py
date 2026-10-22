@@ -15,7 +15,7 @@ down_revision: str | None = "0001"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-USER_ROLES = ("viewer", "operator", "admin")
+USER_ROLES = ("viewer", "operator", "admin", "owner")
 
 
 def upgrade() -> None:

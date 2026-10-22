@@ -12,20 +12,15 @@ router bgp {{ intent.bgp.asn }}
  neighbor {{ neighbor.peer_ip }} password {{ neighbor.password }}
 {% endif %}
 {% endfor %}
- !
  address-family ipv4
-{% set prefixes = intent.bgp.neighbors | map(attribute="announced_prefixes") | sum(start=[]) | unique | list %}
-{% if prefixes %}
-{% for prefix in prefixes %}
+{% for prefix in intent.bgp.neighbors | map(attribute="announced_prefixes") | sum(start=[]) | unique %}
   network {{ prefix.network_address }} mask {{ prefix.netmask }}
 {% endfor %}
-{% else %}
-  network {{ intent.bgp.router_id }} mask 255.255.255.255
-{% endif %}
 {% for neighbor in intent.bgp.neighbors %}
   neighbor {{ neighbor.peer_ip }} activate
 {% endfor %}
  exit-address-family
+{% if intent.bgp.evpn %}
  !
  address-family l2vpn evpn
 {% for neighbor in intent.bgp.neighbors %}
@@ -34,9 +29,5 @@ router bgp {{ intent.bgp.asn }}
   neighbor {{ neighbor.peer_ip }} next-hop-unchanged
 {% endfor %}
  exit-address-family
-!
-router ospf 1
- router-id {{ intent.bgp.router_id }}
- log-adjacency-changes
-!
+{% endif %}
 {% endif %}

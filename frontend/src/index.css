@@ -2,18 +2,113 @@
 
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *, .theme-dark, .theme-dark *));
 
+/* ============================================================================
+   GEIST / LINEAR ENGINEERING DESIGN SYSTEM TOKENS
+   Achromatic Depth Hierarchy + Semantic Telemetry Accents
+   ============================================================================ */
+:root,
+[data-theme="dark"],
+.theme-dark {
+  --bg-base: #08090a;
+  --bg-main: #08090a;
+  --bg-surface: #0e1014;
+  --bg-card: #0e1014;
+  --bg-elevated: #14171e;
+  --bg-panel: #1c202a;
+  --bg-subtle: rgba(255, 255, 255, 0.04);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.16);
+  --border-strong: rgba(255, 255, 255, 0.24);
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --accent-primary: #e4e4e7;
+  --accent-secondary: #a1a1aa;
+  --topology-link: rgba(255, 255, 255, 0.14);
+  color-scheme: dark;
+}
+
+[data-theme="light"],
+.theme-light {
+  --bg-base: #f8fafc;
+  --bg-main: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-card: #ffffff;
+  --bg-elevated: #f1f5f9;
+  --bg-panel: #e2e8f0;
+  --bg-subtle: rgba(15, 23, 42, 0.04);
+  --border-subtle: rgba(15, 23, 42, 0.1);
+  --border-hover: rgba(15, 23, 42, 0.18);
+  --border-strong: rgba(15, 23, 42, 0.26);
+  --text-primary: #09090b;
+  --text-secondary: #3f3f46;
+  --text-muted: #64748b;
+  --accent-primary: #18181b;
+  --accent-secondary: #52525b;
+  --topology-link: rgba(15, 23, 42, 0.2);
+  color-scheme: light;
+}
+
 @layer base {
+  html {
+    font-size: 16px;
+    touch-action: manipulation;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  @media (max-width: 380px) {
+    html {
+      font-size: 14px;
+    }
+  }
+
+  @media (min-width: 2560px) {
+    html {
+      font-size: 18px;
+    }
+  }
+
+  @media (min-width: 3400px) {
+    html {
+      font-size: 20px;
+    }
+  }
+
   body {
-    background-color: #08090c;
-    color: #e2e8f0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    min-height: 100vh;
+    min-height: 100dvh;
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+
+  button,
+  a,
+  input,
+  select,
+  textarea {
+    touch-action: manipulation;
+  }
+
+  code,
+  pre,
+  kbd,
+  .font-mono {
+    font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  table,
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
   }
 }
 
-/* Custom scrollbars */
+/* Slim Engineering Scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -22,297 +117,128 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(161, 161, 170, 0.2);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.22);
+  background: rgba(161, 161, 170, 0.35);
 }
 
-/* Semantic Design Tokens */
-:root {
-  --bg-main: #08090c;
-  --bg-card: #0c0e15;
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --text-primary: #e2e8f0;
-  --text-muted: #94a3b8;
-  --accent-primary: #8b5cf6;
-  --accent-secondary: #06b6d4;
-  --topology-link: rgba(255, 255, 255, 0.16);
-  color-scheme: dark;
-}
-
-/* 1. DARK THEME (Flagship Aeza Obsidian) */
-[data-theme="dark"],
-.theme-dark {
-  --bg-main: #08090c;
-  --bg-card: #0c0e15;
-  --border-subtle: rgba(255, 255, 255, 0.08);
-  --text-primary: #e2e8f0;
-  --text-muted: #94a3b8;
-  --accent-primary: #8b5cf6;
-  --accent-secondary: #06b6d4;
-  --topology-link: rgba(255, 255, 255, 0.16);
-  color-scheme: dark;
-}
-
-/* 2. LIGHT THEME (Clean Crisp Modern) */
-[data-theme="light"],
-.theme-light {
-  --bg-main: #f8fafc;
-  --bg-card: #ffffff;
-  --border-subtle: rgba(15, 23, 42, 0.08);
-  --text-primary: #0f172a;
-  --text-muted: #64748b;
-  --accent-primary: #6366f1;
-  --accent-secondary: #0ea5e9;
-  --topology-link: rgba(15, 23, 42, 0.22);
-  color-scheme: light;
-}
-
-
-.theme-light body,
-.theme-light .min-h-screen {
-  background-color: #f8fafc !important;
-  color: #0f172a !important;
-}
-
-.theme-light header {
-  background: rgba(255, 255, 255, 0.95) !important;
-  border-color: rgba(226, 232, 240, 1) !important;
-  color: #0f172a !important;
-}
-
-.theme-light header span.text-white {
-  color: #0f172a !important;
-}
-
-.theme-light aside {
-  background: #ffffff !important;
-  border-color: rgba(226, 232, 240, 1) !important;
-}
-
-.theme-light aside button {
-  color: #475569 !important;
-}
-
-.theme-light aside button:hover {
-  background: #f1f5f9 !important;
-  color: #0f172a !important;
-}
-
-.theme-light aside button.bg-white\/\[0\.05\] {
-  background: #e0e7ff !important;
-  color: #4338ca !important;
-}
-
-.theme-light section:not(.terminal-window),
-.theme-light .glass-panel:not(.terminal-window),
-.theme-light .bento-card:not(.terminal-window),
-.theme-light div[class*="bg-[#0"]:not(.terminal-window) {
-  background: #ffffff !important;
-  border-color: rgba(226, 232, 240, 1) !important;
-  color: #0f172a !important;
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
-}
-
-/* Terminal styling across themes */
-.terminal-window {
-  background: #090b10;
-  border-color: rgba(255, 255, 255, 0.1);
-  color: #e2e8f0;
-}
-
-.theme-light .terminal-window {
-  background: #f8fafc !important;
-  border-color: rgba(226, 232, 240, 1) !important;
-  color: #0f172a !important;
-}
-
-.theme-light .terminal-window span,
-.theme-light .terminal-window div,
-.theme-light .terminal-window pre,
-.theme-light .terminal-window code {
-  color: #0f172a !important;
-}
-
-.theme-light .terminal-window .text-zinc-600 {
-  color: #94a3b8 !important;
-}
-.theme-light .terminal-window .text-zinc-500 {
-  color: #64748b !important;
-}
-.theme-light .terminal-window .text-zinc-400 {
-  color: #475569 !important;
-}
-.theme-light .terminal-window .text-zinc-300,
-.theme-light .terminal-window .text-zinc-200 {
-  color: #1e293b !important;
-}
-.theme-light .terminal-window .text-cyan-400 {
-  color: #0284c7 !important;
-}
-.theme-light .terminal-window .text-emerald-400 {
-  color: #059669 !important;
-}
-.theme-light .terminal-window .text-amber-400 {
-  color: #d97706 !important;
-}
-.theme-light .terminal-window .text-rose-400 {
-  color: #e11d48 !important;
-}
-
-/* Eliminate dark zinc spots in light theme */
-.theme-light [class*="bg-zinc-900"],
-.theme-light [class*="bg-zinc-950"],
-.theme-light [class*="bg-zinc-800"] {
-  background-color: #f1f5f9 !important;
-  border-color: rgba(226, 232, 240, 1) !important;
-  color: #0f172a !important;
-}
-
-.theme-light div[class*="bg-zinc-950/40"] {
-  background: #f8fafc !important;
-  border-color: rgba(226, 232, 240, 0.9) !important;
-}
-
-.theme-light div[class*="bg-zinc-950/40"]:hover {
-  background: #f1f5f9 !important;
-}
-
-.theme-light section > div:first-child {
-  background: #f8fafc !important;
-  border-color: rgba(226, 232, 240, 1) !important;
-  color: #1e293b !important;
-}
-
-.theme-light section > div:first-child span.text-white {
-  color: #0f172a !important;
-}
-
-.theme-light table {
-  background: #ffffff !important;
-  color: #0f172a !important;
-}
-
-.theme-light thead tr {
-  background: #f1f5f9 !important;
-  color: #475569 !important;
-}
-
-.theme-light tbody tr {
-  border-color: #f1f5f9 !important;
-}
-
-.theme-light tbody tr:hover {
-  background: #f8fafc !important;
-}
-
-.theme-light .text-white {
-  color: #0f172a !important;
-}
-
-.theme-light .text-zinc-200 {
-  color: #1e293b !important;
-}
-
-.theme-light .text-zinc-300 {
-  color: #334155 !important;
-}
-
-.theme-light .text-zinc-400 {
-  color: #64748b !important;
-}
-
-.theme-light .text-zinc-500 {
-  color: #94a3b8 !important;
-}
-
-.theme-light input,
-.theme-light select,
-.theme-light textarea {
-  background: #ffffff !important;
-  color: #0f172a !important;
-  border-color: #cbd5e1 !important;
-}
-
-/* Glassmorphism & Aeza utilities */
+/* Surface Primitives */
 .glass-panel {
-  background: rgba(14, 16, 24, 0.85);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
 }
 
 .glass-panel-hover {
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 .glass-panel-hover:hover {
-  border-color: rgba(255, 255, 255, 0.18);
-  background: rgba(19, 23, 34, 0.95);
-  transform: translateY(-1px);
+  border-color: var(--border-hover);
+  background: var(--bg-elevated);
 }
 
-/* Windows Welcome Animations */
-@keyframes winGlowPulse {
-  0%, 100% {
-    transform: scale(1);
-    opacity: 0.6;
-  }
-  50% {
-    transform: scale(1.15);
-    opacity: 0.9;
-  }
+.bento-card {
+  background-color: var(--bg-card);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
 }
 
-@keyframes winSpinner {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
-  }
+.terminal-window {
+  background: #090a0d;
+  border-color: var(--border-subtle);
+  color: #e4e4e7;
 }
 
-@keyframes winFadeInUp {
-  0% {
+/* Light theme semantic mapping for legacy utility classes */
+[data-theme="light"] header,
+[data-theme="light"] aside,
+.theme-light header,
+.theme-light aside {
+  background-color: var(--bg-surface);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+[data-theme="light"] section:not(.terminal-window),
+[data-theme="light"] div[class*="bg-[#0"]:not(.terminal-window),
+.theme-light section:not(.terminal-window),
+.theme-light div[class*="bg-[#0"]:not(.terminal-window) {
+  background-color: var(--bg-surface);
+  border-color: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+[data-theme="light"] .terminal-window,
+.theme-light .terminal-window {
+  background-color: #f8fafc;
+  border-color: var(--border-subtle);
+  color: #09090b;
+}
+
+[data-theme="light"] .text-white,
+.theme-light .text-white {
+  color: #09090b;
+}
+[data-theme="light"] .text-zinc-100,
+[data-theme="light"] .text-zinc-200,
+.theme-light .text-zinc-100,
+.theme-light .text-zinc-200 {
+  color: #18181b;
+}
+[data-theme="light"] .text-zinc-300,
+.theme-light .text-zinc-300 {
+  color: #3f3f46;
+}
+[data-theme="light"] .text-zinc-400,
+.theme-light .text-zinc-400 {
+  color: #52525b;
+}
+[data-theme="light"] .text-zinc-500,
+.theme-light .text-zinc-500 {
+  color: #64748b;
+}
+
+[data-theme="light"] input,
+[data-theme="light"] select,
+[data-theme="light"] textarea,
+.theme-light input,
+.theme-light select,
+.theme-light textarea {
+  background-color: #ffffff;
+  color: #09090b;
+  border-color: rgba(15, 23, 42, 0.15);
+}
+
+/* Subtle Hardware Boot & UI Transitions */
+@keyframes fadeIn {
+  from {
     opacity: 0;
-    transform: translateY(16px);
+    transform: translateY(4px);
   }
-  100% {
+  to {
     opacity: 1;
     transform: translateY(0);
   }
 }
 
-.animate-win-glow {
-  animation: winGlowPulse 4s ease-in-out infinite;
+@keyframes bootPulse {
+  0%, 100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.85;
+  }
 }
 
-.animate-win-spin {
-  animation: winSpinner 1.8s linear infinite;
+.animate-fade-in {
+  animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .animate-win-fade {
-  animation: winFadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: fadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
-.radar-ping {
-  position: relative;
-  display: inline-flex;
-}
-.radar-ping::before {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  border-radius: 9999px;
-  background: currentColor;
-  opacity: 0.4;
-  animation: ping 2s cubic-bezier(0, 0, 0.2, 1) infinite;
-}
-@keyframes ping {
-  75%, 100% {
-    transform: scale(2.2);
-    opacity: 0;
-  }
+.animate-boot-pulse {
+  animation: bootPulse 2.4s ease-in-out infinite;
 }

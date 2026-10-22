@@ -1,80 +1,158 @@
 groups:
+  # Приводим потоковые метрики gnmic (gnmi_*), node_exporter (node_*) и snmp-exporter (if*)
+  # к единым именам netops_*, которые читают панели Grafana и сервис прогноза.
+  - name: telemetry_unification
+    interval: 30s
+    rules:
+      - record: netops_device_cpu_utilization_percent
+        expr: >-
+          avg by (hostname, fabric_id, platform) (gnmi_components_component_cpu_utilization_state_instant)
+          or clamp_min(avg by (hostname, fabric_id, platform) (cpmCPUTotal5secRev or cpmCPUTotal1minRev), 1)
+          or avg by (hostname, fabric_id, platform) (hwEntityCpuUsage > 0)
+          or avg by (hostname, fabric_id, platform) (hrProcessorLoad)
+
+      - record: netops_device_memory_utilization_percent
+        expr: >-
+          (
+            100 * avg by (hostname, fabric_id, platform) (gnmi_system_memory_state_used)
+            / clamp_min(avg by (hostname, fabric_id, platform) (gnmi_system_memory_state_physical), 1)
+          )
+          or (
+            100 * sum by (hostname, fabric_id, platform) (ciscoMemoryPoolUsed)
+            / clamp_min(sum by (hostname, fabric_id, platform) (ciscoMemoryPoolUsed + ciscoMemoryPoolFree), 1)
+          )
+          or avg by (hostname, fabric_id, platform) (hwEntityMemUsage > 0)
+          or (
+            100 * sum by (hostname, fabric_id, platform) (hrStorageUsed)
+            / clamp_min(sum by (hostname, fabric_id, platform) (hrStorageSize), 1)
+          )
+
+      - record: netops_device_uplink_utilization_percent
+        expr: >-
+          clamp_max(
+            clamp_min(
+              max by (hostname, fabric_id, platform) (
+                (
+                  rate(gnmi_interfaces_interface_state_counters_in_octets[2m])
+                  + rate(gnmi_interfaces_interface_state_counters_out_octets[2m])
+                ) * 8 / 1e4
+              )
+              or max by (hostname, fabric_id, platform) (
+                (rate(ifHCInOctets[2m]) + rate(ifHCOutOctets[2m])) * 8 / clamp_min(ifHighSpeed * 10, 1e4)
+              )
+              or max by (hostname, fabric_id, platform) (
+                (rate(ifHCInOctets[2m]) + rate(ifHCOutOctets[2m])) * 8 / 1e4
+              ),
+              0.1
+            ),
+            100
+          )
+
+      - record: netops_server_cpu_utilization_percent
+        expr: >-
+          100 * (
+            1 - avg by (hostname, fabric_id, platform) (
+              rate(node_cpu_seconds_total{mode="idle"}[2m])
+            )
+          )
+
+      - record: netops_server_memory_utilization_percent
+        expr: >-
+          100 * (
+            1 - node_memory_MemAvailable_bytes
+            / clamp_min(node_memory_MemTotal_bytes, 1)
+          )
+
+      - record: netops_server_disk_utilization_percent
+        expr: >-
+          100 * (
+            1 - node_filesystem_avail_bytes{mountpoint="/"}
+            / clamp_min(node_filesystem_size_bytes{mountpoint="/"}, 1)
+          )
+
+      - record: netops_server_network_rate_mbps
+        expr: >-
+          sum by (hostname, fabric_id, platform) (
+            rate(node_network_receive_bytes_total{device!="lo"}[2m])
+            + rate(node_network_transmit_bytes_total{device!="lo"}[2m])
+          ) * 8 / 1e6
+
+      - record: netops_server_load_1m
+        expr: node_load1
+
   - name: fabric_triggers
     rules:
-      # 1. Коммутатор целиком перестал отвечать по SNMP
+      # 1. Узел перестал отвечать внешнему сборщику (SNMP / gNMI / exporter)
       - alert: DeviceDown
-        expr: up{job="snmp_fabric", tier="live"} == 0
+        expr: up{job=~"snmp_fabric|gnmic|node_exporter_fleet"} == 0
         for: 20s
         labels:
           severity: critical
         annotations:
-          summary: "Коммутатор {{ $labels.hostname }} ({{ $labels.vendor }}) недоступен"
-          description: "Prometheus потерял связь с {{ $labels.instance }} [{{ $labels.os }}] (SNMP timeout > 20s)"
+          summary: "Узел {{ $labels.hostname }} недоступен"
+          description: "Prometheus потерял связь с {{ $labels.instance }} (job={{ $labels.job }})"
 
       # 2. Недавняя перезагрузка устройства (Uptime < 5 минут)
       - alert: DeviceRebooted
-        expr: (sysUpTime{job="snmp_hardware_and_bgp"} / 100) < 300
+        expr: (sysUpTime / 100) < 300
         for: 10s
         labels:
           severity: warning
         annotations:
           summary: "Коммутатор {{ $labels.hostname }} недавно перезагрузился"
-          description: "Uptime устройства {{ $labels.hostname }} ({{ $labels.vendor }}) составляет менее 5 минут"
+          description: "Uptime устройства {{ $labels.hostname }} составляет менее 5 минут"
 
-      # 3. Упал межузловой линк (все 6 вендоров)
+      # 3. Упал рабочий порт (любой вендор, кроме loopback и management-интерфейсов)
       - alert: FabricLinkDown
-        expr: >
-          ifOperStatus{
-            job="snmp_fabric",
-            ifDescr=~"GigabitEthernet[23]|Ethernet[0-9]+|GE1/0/[019]|gi1/0/[0-9]+|te1/0/[0-9]+|10GE1/0/[0-9]+"
-          } == 2
+        expr: >-
+          ifOperStatus{ifDescr!~"^(lo|Loopback|Management|mgmt|fxp|MEth|oob|Null|vlan).*"} == 2
+          or gnmi_interfaces_interface_state_oper_status{interface_name!~"^(lo|Loopback|Management|mgmt|fxp|MEth|oob).*"} == 2
         for: 10s
         labels:
           severity: critical
         annotations:
-          summary: "Упал порт {{ $labels.ifDescr }} на {{ $labels.hostname }} ({{ $labels.vendor }})"
-          description: "Интерфейс {{ $labels.ifDescr }} ({{ $labels.ifAlias }}) перешел в состояние DOWN (ifOperStatus=2)"
+          summary: "Упал порт {{ $labels.ifDescr }}{{ $labels.interface_name }} на {{ $labels.hostname }}"
+          description: "Интерфейс перешёл в состояние DOWN (oper-status=2)"
 
-      # 4. Дропы пакетов на порту (ACL / переполнение буфера)
+      # 4. Дропы пакетов на порту (ACL / переполнение буфера) по gNMI
       - alert: HighInterfaceDiscards
-        expr: (rate(ifInDiscards{job="snmp_fabric"}[1m]) + rate(ifOutDiscards{job="snmp_fabric"}[1m])) > 5
+        expr: >-
+          rate(gnmi_interfaces_interface_state_counters_in_discards[1m]) > 5
         for: 30s
         labels:
           severity: warning
         annotations:
-          summary: "Сброс пакетов на {{ $labels.hostname }} ({{ $labels.ifDescr }})"
-          description: "Дропы пакетов на порту превышают 5 pkt/s (вендор: {{ $labels.vendor }})"
+          summary: "Сброс пакетов на {{ $labels.hostname }} ({{ $labels.interface_name }})"
+          description: "Дропы пакетов на порту превышают 5 пакетов/сек"
 
       # 5. Ошибки на физическом уровне (CRC / Frame Errors)
       - alert: InterfacePacketErrors
-        expr: (rate(ifInErrors{job="snmp_fabric"}[1m]) + rate(ifOutErrors{job="snmp_fabric"}[1m])) > 1
+        expr: (rate(ifInErrors[1m]) + rate(ifOutErrors[1m])) > 1
         for: 20s
         labels:
           severity: warning
         annotations:
-          summary: "Ошибки L1/L2 на порту {{ $labels.ifDescr }} ({{ $labels.hostname }})"
-          description: "На интерфейсе {{ $labels.ifDescr }} фиксируются ошибки приема/передачи"
+          summary: "Ошибки L1/L2 на порту {{ $labels.ifIndex }} ({{ $labels.hostname }})"
+          description: "На интерфейсе {{ $labels.ifIndex }} фиксируются ошибки приёма/передачи"
 
       # 6. Перегрузка канала (> 80% от скорости порта)
       - alert: HighLinkUtilization
-        expr: >
-          (
-            (rate(ifHCInOctets{job="snmp_fabric"}[1m]) * 8)
-            / (ifHighSpeed{job="snmp_fabric"} * 1000000 > 0)
-          ) * 100 > 80
+        expr: >-
+          netops_device_uplink_utilization_percent > 80
         for: 1m
         labels:
           severity: warning
         annotations:
-          summary: "Высокая загрузка канала {{ $labels.ifDescr }} на {{ $labels.hostname }}"
-          description: "Утилизация интерфейса {{ $labels.ifDescr }} превысила 80%"
+          summary: "Высокая загрузка канала на {{ $labels.hostname }}"
+          description: "Утилизация аплинка {{ $labels.hostname }} превысила 80%"
 
       # 7. Высокая загрузка CPU (> 85%)
       - alert: HighCpuLoad
-        expr: avg by (hostname, vendor) (hrProcessorLoad) > 85
+        expr: netops_device_cpu_utilization_percent > 85
         for: 1m
         labels:
           severity: warning
         annotations:
-          summary: "Высокая нагрузка CPU на {{ $labels.hostname }} ({{ $labels.vendor }})"
+          summary: "Высокая нагрузка CPU на {{ $labels.hostname }}"
           description: "Средняя загрузка CPU превышает 85% в течение 1 минуты"
+

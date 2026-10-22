@@ -1,0 +1,10 @@
+{% for iface in intent.interfaces %}
+auto {{ iface.name }}
+iface {{ iface.name }} inet {{ "static" if iface.ipv4_address else "manual" }}
+{% if iface.description %}
+  # {{ iface.description }}
+{% endif %}
+{% if iface.ipv4_address %}
+  address {{ iface.ipv4_address.with_prefixlen }}
+{% endif %}
+{% endfor %}

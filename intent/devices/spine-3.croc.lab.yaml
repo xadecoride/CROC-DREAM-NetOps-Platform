@@ -1,0 +1,98 @@
+hostname: spine-3.croc.lab
+interfaces:
+- name: GE1/0/0
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Downlink to leaf1 GE1/0/2
+  ipv4_address: 10.10.0.18/31
+  ospf_area: 0.0.0.0
+- name: GE1/0/1
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Downlink to leaf2 GE1/0/2
+  ipv4_address: 10.10.0.20/31
+  ospf_area: 0.0.0.0
+- name: GE1/0/2
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Downlink to leaf3 GigabitEthernet4
+  ipv4_address: 10.10.0.22/31
+  ospf_area: 0.0.0.0
+- name: GE1/0/3
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Downlink to leaf4 Ethernet3
+  ipv4_address: 10.10.0.24/31
+  ospf_area: 0.0.0.0
+- name: LoopBack0
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Router-ID / BGP announce
+  ipv4_address: 10.255.0.13/32
+  ospf_area: 0.0.0.0
+bgp:
+  asn: 65000
+  router_id: 10.255.0.13
+  neighbors:
+  - peer_ip: 10.10.0.19
+    remote_asn: 65001
+    description: leaf1
+    announced_prefixes:
+    - 10.255.0.13/32
+  - peer_ip: 10.10.0.21
+    remote_asn: 65002
+    description: leaf2
+    announced_prefixes:
+    - 10.255.0.13/32
+  - peer_ip: 10.10.0.23
+    remote_asn: 65003
+    description: leaf3
+    announced_prefixes:
+    - 10.255.0.13/32
+  - peer_ip: 10.10.0.25
+    remote_asn: 65004
+    description: leaf4
+    announced_prefixes:
+    - 10.255.0.13/32
+  evpn: true
+acls:
+- name: FABRIC-IN
+  rules:
+  - sequence: 10
+    action: permit
+    protocol: icmp
+    source: any
+    destination: any
+  - sequence: 15
+    action: permit
+    protocol: ospf
+    source: any
+    destination: any
+  - sequence: 20
+    action: permit
+    protocol: tcp
+    source: any
+    destination: any
+    dst_port: bgp
+  - sequence: 30
+    action: permit
+    protocol: tcp
+    source: any
+    destination: any
+    src_port: bgp
+  - sequence: 40
+    action: deny
+    protocol: tcp
+    source: any
+    destination: any
+    dst_port: telnet
+  - sequence: 50
+    action: permit
+    protocol: ip
+    source: any
+    destination: any

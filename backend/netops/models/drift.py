@@ -17,11 +17,11 @@ class DriftRecord(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    status: Mapped[DriftStatus] = mapped_column(enum_type(DriftStatus), index=True)
+    checked_at: Mapped[datetime] = mapped_column(default=utcnow, index=True)
     job_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("jobs.id", ondelete="SET NULL"), index=True
     )
-    status: Mapped[DriftStatus] = mapped_column(enum_type(DriftStatus), index=True)
-    checked_at: Mapped[datetime] = mapped_column(default=utcnow)
     unauthorized_lines: Mapped[list[str]] = mapped_column(default=list)
     missing_lines: Mapped[list[str]] = mapped_column(default=list)
     remediation_config: Mapped[str | None] = mapped_column(Text)

@@ -15,7 +15,6 @@ from tests.integration.helpers import append_to_running_config
 OPERATOR = auth(UserRole.OPERATOR)
 VIEWER = auth(UserRole.VIEWER)
 
-# Дрейф в управляемой секции: пользователи и management-порт в сравнение не входят.
 ROGUE_LOOPBACK = "interface Loopback99\n"
 
 
@@ -201,3 +200,30 @@ class TestRemediation:
             client.post("/api/v1/drift/remediate", json=body, headers=OPERATOR).status_code == 409
         )
         assert len(dispatcher.job_ids) == 2
+
+    def test_safe_and_risky_drift_breakdown(
+        self,
+        client: TestClient,
+        devices: dict[str, Device],
+        session: Session,
+    ) -> None:
+        now = datetime.now(UTC)
+        device = devices["leaf-1.croc.lab"]
+        session.add(
+            DriftRecord(
+                device_id=device.id,
+                status=DriftStatus.DRIFT_DETECTED,
+                checked_at=now,
+                unauthorized_lines=["description Backup Link", "router bgp 65000", "interface GigabitEthernet2"],
+                missing_lines=["ntp server 1.1.1.1"],
+            )
+        )
+        session.commit()
+
+        item = _report(client)["leaf-1.croc.lab"]
+        assert item["status"] == "DRIFT_DETECTED"
+        assert item["risk_level"] == "HIGH"
+        assert "description Backup Link" in item["safe_lines"]
+        assert "ntp server 1.1.1.1" in item["safe_lines"]
+        assert "router bgp 65000" in item["risky_lines"]
+        assert "interface GigabitEthernet2" in item["risky_lines"]

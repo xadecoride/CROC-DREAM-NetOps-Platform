@@ -27,9 +27,7 @@ INTENT = DeviceIntent.model_validate(
 def test_sections_are_rendered_in_order() -> None:
     config = JinjaConfigRenderer(TEMPLATES).render(DEVICE, INTENT)
     lines = config.splitlines()
-    # Шаблон base.j2 ведёт сетевая часть команды: до hostname идёт преамбула устройства,
-    # а само имя пишется коротким. Проверяем порядок секций, а не конкретные строки.
-    assert lines.index("hostname leaf-1") < lines.index("interface GigabitEthernet2")
+    assert lines[0] == "hostname leaf-1.croc.lab"
     assert lines.index("interface GigabitEthernet2") < lines.index("router bgp 65101")
     assert " ip address 10.0.1.1 255.255.255.254" in lines
     assert config.endswith("\n")
@@ -58,3 +56,37 @@ def test_template_syntax_errors_are_reported(tmp_path: Path) -> None:
     (tmp_path / "cisco_iosxe" / "base.j2").write_text("{% if %}\n")
     with pytest.raises(RenderError, match=r"cisco_iosxe/base\.j2"):
         JinjaConfigRenderer(tmp_path).render(DEVICE, INTENT)
+
+
+def test_ssti_sandbox_and_domestic_acls(tmp_path: Path) -> None:
+    (tmp_path / "cisco_iosxe").mkdir()
+    (tmp_path / "cisco_iosxe" / "base.j2").write_text("{{ ''.__class__.__mro__ }}\n")
+    with pytest.raises(RenderError, match=r"__class__"):
+        JinjaConfigRenderer(tmp_path).render(DEVICE, INTENT)
+
+    acl_intent = DeviceIntent.model_validate(
+        {
+            "hostname": "mes-1.croc.lab",
+            "acls": [
+                {
+                    "name": "FABRIC_IN",
+                    "rules": [
+                        {
+                            "sequence": 10,
+                            "action": "permit",
+                            "protocol": "ip",
+                            "source": "10.0.0.0/24",
+                            "destination": "any",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    from netops.enums import Platform
+
+    repo_templates = Path(__file__).resolve().parents[3] / "templates"
+    for plat in (Platform.ELTEX_MES, Platform.YADRO_KORNFE):
+        dev = DEVICE.model_copy(update={"platform": plat, "hostname": "mes-1.croc.lab"})
+        rendered = JinjaConfigRenderer(repo_templates).render(dev, acl_intent)
+        assert "FABRIC_IN" in rendered

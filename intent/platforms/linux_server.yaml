@@ -1,8 +1,11 @@
+# ==============================================================================
+# БЛОК 1: ИДЕНТИФИКАЦИЯ СТЕНДА И ВЕНДОРА (TCP / SSH / CLI ТРИГГЕРЫ)
+# ==============================================================================
 platform: linux_server
 vendor: Linux
 default_password: admin
 default_interface: eth0
-offline_ports: [2231, 2232]
+offline_ports: [2231]
 offline_interfaces:
   - eth0
   - eth1
@@ -10,22 +13,99 @@ ssh_banners:
   - ubuntu
   - debian
   - alpine
+  - linux
+  - centos
+  - redhat
+  - rhel
 version_signatures:
   - Linux
+  - Ubuntu
+  - Debian
+  - Alpine
+  - CentOS
+  - Red Hat
+
+# ==============================================================================
+# БЛОК 2: ИНСПЕКЦИЯ ТОПОЛОГИИ И КОНФИГУРАЦИИ (DISCOVERY & DRIFT ENGINE)
+# ==============================================================================
 interface_prefixes:
   - eth
   - ens
+  - enp
   - lo
 lldp_port_prefixes:
   - eth
   - ens
+  - enp
 commands:
   version: uname -a
   memory: top -bn1 | head -n 5
-  running_config: ip addr show
+  cpu: top -bn1 | head -n 5
+  running_config: "echo \"hostname srv-rocky-1.croc.lab\"; ip -4 -br addr show scope global | awk '$1 ~ /^(ens|eth|enp)/ {split($3,a,\" \"); printf \"auto %s\\niface %s inet static\\n  address %s\\n\", $1, $1, a[1]}'"
   hostname_filter: hostname
   interfaces_brief: ip -br addr show
   lldp_neighbors: lldpctl
+  audit_logs: "tail -n 50 /var/log/audit/audit.log /var/log/syslog 2>/dev/null || journalctl -n 50 --no-pager"
+  sip_status: "ss -u -a sport = :5060 2>/dev/null || true"
+
+# ==============================================================================
+# БЛОК 3: ТРИГГЕРЫ ПРОТОКОЛОВ ТЕЛЕМЕТРИИ И КАСКАД ПРИОРИТЕТОВ (CAPABILITIES)
+# ==============================================================================
+gnmi:
+  default_port: 6030
+  check_command: systemctl status gnmi
+  match_tokens:
+    - active
+    - running
+snmp:
+  base_port: 161
+  clab_offset: 0
+exporter:
+  port: 9100
+  path: /metrics
+protocol_priority:
+  - node_exporter
+  - snmp
+  - ssh_cli
+
+# ==============================================================================
+# БЛОК 4: КАСТОМНЫЙ SSH CLI СБОРЩИК МЕТРИК (POOLED SSH FALLBACK ENGINE)
+# ==============================================================================
+telemetry:
+  cpu_pct:
+    command: top -bn1 | head -n 5
+    parser: parse_linux_cpu
+  memory_pct:
+    command: top -bn1 | head -n 5
+    parser: parse_linux_memory
+  uplink_util_pct:
+    command: cat /proc/net/dev
+    parser: parse_linux_net_util
+  disk_util_pct:
+    command: df -h /
+    parser: parse_linux_disk
+  network_rate_mbps:
+    command: cat /proc/net/dev
+    parser: parse_linux_network_rate
+  load_1m:
+    command: cat /proc/loadavg
+    parser: parse_linux_load
+  audit_log_events:
+    command: "grep -h -E 'type=(USER_AUTH|SYSCALL|AVC)|sshd|sudo' /var/log/audit/audit.log /var/log/auth.log /var/log/syslog 2>/dev/null | wc -l"
+    parser: parse_linux_audit_logs
+  sip_active_sessions:
+    command: "ss -u -H sport = :5060 2>/dev/null | wc -l"
+    parser: parse_sip_sessions
+  tcp_retransmits_rate:
+    command: "grep -E '^Tcp:' /proc/net/snmp 2>/dev/null || ss -s"
+    parser: parse_linux_tcp_retransmits
+  conntrack_usage_pct:
+    command: "cat /proc/sys/net/netfilter/nf_conntrack_count /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo 0"
+    parser: parse_linux_conntrack
+
+# ==============================================================================
+# БЛОК 5: АВАРИЙНОЕ УПРАВЛЕНИЕ (EMERGENCY HUB)
+# ==============================================================================
 emergency_commands:
   reset_bgp_sessions: ip route flush cache
   rollback_last_commit: etckeeper vcs checkout || true

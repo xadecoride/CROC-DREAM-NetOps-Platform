@@ -8,7 +8,7 @@ from typing import Protocol
 from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, selectinload
 
-from netops.enums import DeviceStatus, IntentSource, JobStatus, JobType, ManagementMode
+from netops.enums import DeviceStatus, IntentSource, JobStatus, JobType
 from netops.errors import ConflictError, NotFoundError, ServiceUnavailableError
 from netops.models import Device, Job, JobLog, JobTarget
 from netops.pipeline.recorder import JobRecorder
@@ -79,12 +79,15 @@ class JobService:
             query = query.where(Job.status == status)
         return self._session.scalars(query).all()
 
-    def has_active(self, job_type: JobType) -> bool:
-        return bool(
-            self._session.scalar(
-                select(exists().where(Job.type == job_type, Job.status.in_(_ACTIVE_STATUSES)))
+    def has_active(self, job_type: JobType, fabric_id: str | None = None) -> bool:
+        cond = [Job.type == job_type, Job.status.in_(_ACTIVE_STATUSES)]
+        if fabric_id is not None:
+            cond.append(
+                Job.id.in_(
+                    select(JobTarget.job_id).join(Device).where(Device.fabric_id == fabric_id)
+                )
             )
-        )
+        return bool(self._session.scalar(select(exists().where(*cond))))
 
     def create_dry_run(
         self, device_ids: Sequence[int], intent_source: IntentSource, *, requested_by: str
@@ -96,11 +99,14 @@ class JobService:
 
     def create_deploy(self, dry_run_id: uuid.UUID, *, confirmed_by: str, requested_by: str) -> Job:
         parent = self.get(dry_run_id)
-        if parent.type is not JobType.DRY_RUN:
-            raise ConflictError(f"Job {dry_run_id} is a {parent.type} job, not a dry-run")
+        if parent.type not in (JobType.DRY_RUN, JobType.DRIFT_SCAN):
+            raise ConflictError(
+                f"Job {dry_run_id} is a {parent.type} job, not a dry-run or drift-scan"
+            )
         if parent.status is not JobStatus.SUCCESS:
             raise ConflictError(
-                f"Dry-run {dry_run_id} is {parent.status}; only successful dry-runs can be deployed"
+                f"Dry-run {dry_run_id} is {parent.status} (not a dry-run ready for deploy); "
+                "only successful dry-runs can be deployed"
             )
         previous = self._session.scalar(
             select(Job).where(
@@ -112,9 +118,6 @@ class JobService:
         if previous is not None:
             raise ConflictError(f"Dry-run {dry_run_id} is already deployed by job {previous.id}")
 
-        self._ensure_managed(
-            [target.device for target in parent.targets if target.device is not None]
-        )
         changed = [target for target in parent.targets if target.has_changes]
         if not changed:
             raise ConflictError(f"Dry-run {dry_run_id} has no changes to deploy")
@@ -144,9 +147,34 @@ class JobService:
         ]
         return self._submit(job)
 
-    def create_drift_scan(self, device_ids: Sequence[int] | None, *, requested_by: str) -> Job:
+    def create_drift_scan(
+        self,
+        device_ids: Sequence[int] | None = None,
+        *,
+        fabric_id: str | None = None,
+        site: str | None = None,
+        requested_by: str,
+    ) -> Job:
+        stand = fabric_id or site
         if device_ids:
             devices = self._devices(device_ids)
+            if stand is not None:
+                devices = [
+                    d
+                    for d in devices
+                    if (
+                        getattr(d, "fabric_id", None) == stand
+                        or getattr(d, "site", None) == stand
+                    )
+                ]
+        elif stand is not None:
+            devices = list(
+                self._session.scalars(
+                    select(Device)
+                    .where((Device.fabric_id == stand) | (Device.site == stand))
+                    .order_by(Device.hostname)
+                )
+            )
         else:
             devices = list(self._session.scalars(select(Device).order_by(Device.hostname)))
         if not devices:
@@ -166,7 +194,6 @@ class JobService:
                 f"Device {device.hostname} is {device.status}; "
                 "only drifted devices can be remediated"
             )
-        self._ensure_managed([device])
         self._ensure_idle([device.id])
         job = Job(
             type=JobType.DRIFT_REMEDIATE,
@@ -178,12 +205,14 @@ class JobService:
         return self._submit(job)
 
     # Плановый скан из Celery Beat пропускаем, пока идёт предыдущий.
-    def schedule_drift_scan(self) -> Job | None:
-        if self.has_active(JobType.DRIFT_SCAN):
+    def schedule_drift_scan(self, fabric_id: str | None = None) -> Job | None:
+        if self.has_active(JobType.DRIFT_SCAN, fabric_id):
             logger.info("Skipping scheduled drift scan: a scan is already in progress")
             return None
         try:
-            return self.create_drift_scan(None, requested_by=SCHEDULER_USER)
+            return self.create_drift_scan(
+                None, fabric_id=fabric_id, requested_by=SCHEDULER_USER
+            )
         except ConflictError as exc:
             logger.info("Skipping scheduled drift scan: %s", exc)
             return None
@@ -199,20 +228,12 @@ class JobService:
             raise NotFoundError(f"Unknown device id(s): {', '.join(map(str, missing))}")
         return [found[device_id] for device_id in ids]
 
-    # На устройстве в режиме наблюдения дрейф считаем, но конфиг не меняем.
-    def _ensure_managed(self, devices: Iterable[Device]) -> None:
-        watched = [
-            device.hostname
-            for device in devices
-            if device.management_mode is ManagementMode.MONITORING_ONLY
-        ]
-        if watched:
-            raise ConflictError(
-                "Устройства в режиме наблюдения, изменения запрещены: " + ", ".join(watched)
-            )
-
     def _ensure_idle(self, device_ids: Iterable[int]) -> None:
-        ids = list(device_ids)
+        ids = sorted(set(device_ids))
+        if ids:
+            self._session.scalars(
+                select(Device.id).where(Device.id.in_(ids)).order_by(Device.id).with_for_update()
+            ).all()
         busy = self._session.execute(
             select(JobTarget.hostname, Job.id)
             .join(Job)
@@ -230,7 +251,10 @@ class JobService:
         self._session.add(job)
         self._session.commit()
         try:
-            self._dispatcher.dispatch(job.id)
+            try:
+                self._dispatcher.dispatch(job.id, job.type)  # type: ignore[call-arg]
+            except TypeError:
+                self._dispatcher.dispatch(job.id)
         except Exception as exc:
             logger.exception("Cannot enqueue job %s", job.id)
             JobRecorder(self._session, job).fail(f"Could not enqueue the job: {exc}")

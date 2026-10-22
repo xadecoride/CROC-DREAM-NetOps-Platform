@@ -1,0 +1,85 @@
+# ==============================================================================
+# БЛОК 1: ИДЕНТИФИКАЦИЯ СТЕНДА И ВЕНДОРА (TCP / SSH / CLI ТРИГГЕРЫ)
+# ==============================================================================
+platform: yadro_kornfe
+vendor: YADRO
+default_password: admin
+default_interface: Ethernet1
+offline_ports: [2261]
+offline_interfaces:
+  - Ethernet1
+  - Ethernet2
+ssh_banners:
+  - yadro
+  - kornfe
+version_signatures:
+  - YADRO
+  - Kornfe
+
+# ==============================================================================
+# БЛОК 2: ИНСПЕКЦИЯ ТОПОЛОГИИ И КОНФИГУРАЦИИ (DISCOVERY & DRIFT ENGINE)
+# ==============================================================================
+interface_prefixes:
+  - Ethernet
+  - Eth
+  - Loopback
+  - Management
+lldp_port_prefixes:
+  - Eth
+  - Et
+commands:
+  version: show version
+  memory: top -bn1 | head -n 5
+  cpu: top -bn1 | head -n 5
+  running_config: show running-config
+  hostname_filter: show running-config | include hostname
+  interfaces_brief: show ip interface brief
+  lldp_neighbors: show lldp neighbors
+  bgp_summary: show ip bgp summary
+
+# ==============================================================================
+# БЛОК 3: ТРИГГЕРЫ ПРОТОКОЛОВ ТЕЛЕМЕТРИИ И КАСКАД ПРИОРИТЕТОВ (CAPABILITIES)
+# ==============================================================================
+gnmi:
+  default_port: 6030
+  check_command: show gnmi
+  match_tokens:
+    - enabled
+    - active
+    - running
+    - "6030"
+    - grpc
+snmp:
+  base_port: 161
+  clab_offset: -600
+exporter:
+  port: 9100
+  path: /metrics
+protocol_priority:
+  - gnmi
+  - snmp
+  - ssh_cli
+
+# ==============================================================================
+# БЛОК 4: КАСТОМНЫЙ SSH CLI СБОРЩИК МЕТРИК (POOLED SSH FALLBACK ENGINE)
+# ==============================================================================
+telemetry:
+  cpu_pct:
+    command: top -bn1 | head -n 5
+    parser: parse_arista_cpu
+  memory_pct:
+    command: top -bn1 | head -n 5
+    parser: parse_arista_memory
+  uplink_util_pct:
+    command: show interfaces counters rates
+    parser: max_yadro_link_utilization
+
+# ==============================================================================
+# БЛОК 5: АВАРИЙНОЕ УПРАВЛЕНИЕ (EMERGENCY HUB)
+# ==============================================================================
+emergency_commands:
+  reset_bgp_sessions: clear ip bgp *
+  rollback_last_commit: rollback configuration
+  restart_services: systemctl restart frr
+  reboot: reboot
+  default: show version

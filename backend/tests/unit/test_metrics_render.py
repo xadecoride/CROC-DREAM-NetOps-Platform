@@ -37,3 +37,5 @@ def test_fractional_values_keep_the_dot() -> None:
 
 def test_empty_result() -> None:
     assert render([], None) == ""
+
+

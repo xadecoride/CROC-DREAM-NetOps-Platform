@@ -5,47 +5,92 @@ import logging
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from netops.db import build_engine, build_session_factory
-from netops.enums import DeviceStatus, DriftStatus, JobStatus
-from netops.models import Device, DriftRecord, Job
+from netops.enums import DriftStatus
+from netops.models import Device
 from netops.settings import Settings, get_settings
-from netops.telemetry import collector, metrics
-from netops.telemetry.metrics import Sample
+from netops.telemetry.bot_actions import (
+    _ai_copilot_text,
+    _cleanup_duplicates_text,
+    _collect_now_text,
+    _freeze_text,
+    _scan_now_text,
+    _set_user_active_text,
+    _set_user_role_text,
+    _set_user_ttl_text,
+    _token_text,
+    _unbind_user_text,
+)
+from netops.telemetry.bot_auth import (
+    _answer_recover,
+    _answer_verify_or_start,
+    _authorize_open_registration_chat,
+    _bot_username,
+    _menu_keyboard,
+    _user_card_markup,
+    _users_markup,
+    bind_telegram_chat_user,
+    ensure_user_token,
+)
+from netops.telemetry.bot_views import (
+    _BOT_HELP_TEXT,
+    _drift_text,
+    _fabrics_text,
+    _failed_jobs,
+    _jobs_text,
+    _max_drift_id,
+    _metrics_text,
+    _new_alerts,
+    _overview_text,
+    _security_text,
+    _status_text,
+    _users_text,
+)
 
 logger = logging.getLogger(__name__)
 
 API_URL = "https://api.telegram.org"
 IDLE_SECONDS = 60
-MAX_ROWS = 10
+_BOT_POLLING_ACTIVE = False
 
 
 class TelegramApi(Protocol):
-    def send(self, chat_id: int, text: str) -> None: ...
+    def send(self, chat_id: int, text: str, reply_markup: dict[str, Any] | None = None) -> None: ...
 
     def updates(self, offset: int | None) -> list[dict[str, Any]]: ...
 
 
-# Токен подставляется в URL, поэтому в логи попадают только имена методов.
 class HttpTelegramApi:
-    def __init__(self, token: str, *, poll_timeout: int = 25) -> None:
+    def __init__(self, token: str, *, poll_timeout: int = 2) -> None:
         self._token = token
         self._poll_timeout = poll_timeout
 
-    def send(self, chat_id: int, text: str) -> None:
-        self._call("sendMessage", {"chat_id": chat_id, "text": text})
+    def send(self, chat_id: int, text: str, reply_markup: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        self._call("sendMessage", payload)
+
+    def edit(
+        self, chat_id: int, message_id: int, text: str, reply_markup: dict[str, Any] | None = None
+    ) -> bool:
+        payload: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id, "text": text}
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+        return self._call("editMessageText", payload) is not None
+
+    def answer_callback(self, callback_query_id: str) -> None:
+        self._call("answerCallbackQuery", {"callback_query_id": callback_query_id})
 
     def updates(self, offset: int | None) -> list[dict[str, Any]]:
-        payload: dict[str, Any] = {
-            "timeout": self._poll_timeout,
-            "allowed_updates": ["message"],
-        }
+        payload: dict[str, Any] = {"timeout": self._poll_timeout, "allowed_updates": ["message", "callback_query"]}
         if offset is not None:
             payload["offset"] = offset
         result = self._call("getUpdates", payload, timeout=self._poll_timeout + 10)
@@ -78,27 +123,25 @@ class BotState:
     last_update_id: int | None = None
     last_drift_id: int = 0
     reported_jobs: set[str] = field(default_factory=set)
-    # Последний сообщённый статус по устройству: оповещаем только при его смене.
     device_status: dict[str, DriftStatus] = field(default_factory=dict)
-    # Текст последней отправленной ошибки задачи: повторы той же ошибки не дублируем.
     reported_errors: set[str] = field(default_factory=set)
+    reported_anomalies: dict[str, str] = field(default_factory=dict)
 
 
 class MetricsBot:
     def __init__(
-        self,
-        session_factory: sessionmaker[Session],
-        api: TelegramApi,
-        chat_ids: Sequence[int],
-        state: BotState | None = None,
+        self, session_factory: sessionmaker[Session], api: TelegramApi, chat_ids: Sequence[int],
+        state: BotState | None = None, *, admin_chat_ids: Sequence[int] | None = None,
+        open_registration: bool = False, settings: Settings | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._api = api
         self._chat_ids = list(chat_ids)
+        self._admin_chat_ids = set(admin_chat_ids if admin_chat_ids is not None else chat_ids)
         self._state = state or BotState()
+        self._open_registration = open_registration
+        self._settings = settings
 
-    # Стартовую точку берём от текущего состояния базы, иначе после перезапуска бот
-    # пришлёт весь накопленный дрейф.
     def catch_up(self) -> None:
         with self._session_factory() as session:
             self._state.last_drift_id = _max_drift_id(session)
@@ -109,229 +152,288 @@ class MetricsBot:
                 if device.status.value in DriftStatus.__members__.values()
             }
 
+    def send_startup_audit(self) -> str:
+        from netops.models import User
+
+        with self._session_factory() as session:
+            users = list(session.scalars(select(User).order_by(User.id)).all())
+            bound_users = [u for u in users if u.bound_client_id]
+            verified_tg = [u for u in users if u.telegram_chat_id]
+            mode = (
+                "ONLINE SSH (Scrapli)"
+                if (self._settings and self._settings.network_driver == "scrapli")
+                else "OFFLINE Эмуляция"
+            )
+            lines = [
+                f"Аудит подключений и сессий ({mode})",
+                f"Участников: {len(users)} | Веб-сессий: {len(bound_users)} | Telegram: {len(verified_tg)}",
+            ]
+            for u in users:
+                dev_str = f"В СЕТИ: {u.bound_client_id}" if u.bound_client_id else "Свободна"
+                lines.append(f"• ID #{u.id} {u.username} [{u.role.value.upper()}] — {dev_str}")
+            report = "\n".join(lines)
+            for cid in self._owner_chat_ids(session):
+                self._send(cid, report, reply_markup={"inline_keyboard": _menu_keyboard()})
+            return report
+
+    def _owner_chat_ids(self, session: Session) -> list[int]:
+        from netops.models import User
+
+        owner = session.scalar(select(User).where(User.username == "owner"))
+        if owner is not None and owner.telegram_chat_id and str(owner.telegram_chat_id).lstrip("-").isdigit():
+            return [int(owner.telegram_chat_id)]
+        if self._settings is not None and self._settings.telegram_chat_id and str(self._settings.telegram_chat_id).lstrip("-").isdigit():
+            return [int(self._settings.telegram_chat_id)]
+        return list(self._chat_ids[:1])
+
     def poll_once(self) -> None:
+        global _BOT_POLLING_ACTIVE
+        _BOT_POLLING_ACTIVE = True
         for update in self._api.updates(self._state.last_update_id):
             self._state.last_update_id = int(update["update_id"]) + 1
-            self._handle(update.get("message") or {})
+            if "callback_query" in update:
+                self._handle_callback(update["callback_query"] or {})
+            elif "my_chat_member" in update:
+                cm = dict(update["my_chat_member"] or {})
+                new_status = str((cm.get("new_chat_member") or {}).get("status") or "")
+                if new_status in ("member", "administrator", "creator"):
+                    cm.setdefault("text", "/start")
+                    self._handle(cm)
+            else:
+                self._handle(update.get("message") or {})
 
     def send_alerts(self) -> None:
         with self._session_factory() as session:
             for text in self._new_alerts(session):
                 self._broadcast(text)
 
-    def _handle(self, message: dict[str, Any]) -> None:
-        chat_id = (message.get("chat") or {}).get("id")
-        text = str(message.get("text") or "").strip()
-        if not isinstance(chat_id, int) or not text.startswith("/"):
-            return
-        if chat_id not in self._chat_ids:
-            logger.warning(
-                "Запрос из чата %s отклонён: его нет в NETOPS_TELEGRAM_CHAT_IDS", chat_id
-            )
-            return
-        command = text.split()[0].split("@")[0]
-        with self._session_factory() as session:
-            self._api.send(chat_id, self._answer(session, command))
+    def _send(self, chat_id: int, text: str, reply_markup: dict[str, Any] | None = None) -> None:
+        try:
+            self._api.send(chat_id, text, reply_markup=reply_markup)
+        except TypeError:
+            self._api.send(chat_id, text)
 
-    def _answer(self, session: Session, command: str) -> str:
-        if command == "/status":
-            return _status_text(session)
-        if command == "/drift":
-            return _drift_text(session)
-        if command == "/jobs":
-            return _jobs_text(session)
-        if command == "/metrics":
-            return _metrics_text(session)
-        return (
-            "Метрики платформы NetOps:\n"
-            "/status — устройства по статусам\n"
-            "/drift — где найден дрейф\n"
-            "/jobs — последние задачи\n"
-            "/metrics — время сбора и ключевые метрики"
+    def _authorize_chat(
+        self, chat_id: Any, *, from_user: dict[str, Any] | None = None, text: str = ""
+    ) -> bool:
+        if not isinstance(chat_id, int):
+            return False
+        if chat_id in self._admin_chat_ids:
+            if self._settings is not None:
+                from netops.models import User
+
+                with self._session_factory() as session:
+                    owner_u = session.scalar(select(User).where(User.username == "owner"))
+                    if owner_u is None or not owner_u.telegram_chat_id:
+                        bind_telegram_chat_user(
+                            session, chat_id, tg_username=(from_user or {}).get("username"),
+                            first_name=(from_user or {}).get("first_name"), settings=self._settings,
+                        )
+            return True
+        if chat_id in self._chat_ids and not self._open_registration:
+            return True
+        if not self._open_registration:
+            logger.warning("Запрос из чата %s отклонён: его нет в NETOPS_TELEGRAM_CHAT_IDS", chat_id)
+            return False
+        return _authorize_open_registration_chat(
+            self._session_factory, chat_id, self._chat_ids, self._send,
+            from_user=from_user, text=text, settings=self._settings,
         )
 
+    def _handle_callback(self, cb: dict[str, Any]) -> None:
+        cb_id = cb.get("id")
+        if cb_id and hasattr(self._api, "answer_callback"):
+            self._api.answer_callback(str(cb_id))
+        msg = cb.get("message") or {}
+        chat_id = (msg.get("chat") or {}).get("id")
+        message_id = msg.get("message_id")
+        from_user = cb.get("from") or {}
+        text = str(cb.get("data") or "").strip()
+        if not text.startswith("/") or not self._authorize_chat(chat_id, from_user=from_user, text=text):
+            return
+        self._dispatch(
+            int(chat_id), text, from_user=from_user, edit_message_id=int(message_id) if isinstance(message_id, int) else None
+        )
+
+    def _handle(self, message: dict[str, Any]) -> None:
+        chat_id = (message.get("chat") or {}).get("id")
+        from_user = message.get("from") or message.get("chat") or {}
+        text = str(message.get("text") or "").strip()
+        if not text:
+            return
+        if not text.startswith("/"):
+            if not self._authorize_chat(chat_id, from_user=from_user, text="/ai"):
+                return
+            self._dispatch(int(chat_id), f"/ai {text}", from_user=from_user)
+            return
+        if not self._authorize_chat(chat_id, from_user=from_user, text=text):
+            return
+        self._dispatch(int(chat_id), text, from_user=from_user)
+
+    def _caller_role(self, session: Session, chat_id: int | None) -> str:
+        if chat_id is None:
+            return "admin"
+        from netops.models import User
+
+        u = session.scalar(select(User).where(User.telegram_chat_id == str(chat_id)))
+        if u is not None:
+            if not u.is_active:
+                return "blocked"
+            return "owner" if u.username == "owner" else u.role.value
+        return "admin" if chat_id in self._admin_chat_ids else "viewer"
+
+    def _dispatch(
+        self, chat_id: int, text: str, *, from_user: dict[str, Any] | None = None, edit_message_id: int | None = None
+    ) -> None:
+        parts = text.split()
+        command, args = parts[0].split("@")[0], parts[1:]
+        with self._session_factory() as session:
+            is_admin = self._caller_role(session, chat_id) in ("owner", "admin")
+            answer = self._answer(session, command, args, chat_id=chat_id, from_user=from_user)
+            if is_admin and command in ("/token", "/ttl", "/block", "/unblock", "/unbind", "/role") and args:
+                target_user = args[0].strip()
+                if edit_message_id is not None and command != "/token":
+                    card = _token_text(session, [target_user], settings=self._settings)
+                    answer = f"✅ {answer}\n\n{card}"
+                markup = _user_card_markup(session, target_user, self._settings)
+            elif is_admin and command in ("/users", "/tokens", "/cleanup"):
+                markup = _users_markup(session)
+            else:
+                markup = {"inline_keyboard": _menu_keyboard()}
+
+            if edit_message_id is not None and hasattr(self._api, "edit"):
+                if self._api.edit(chat_id, edit_message_id, answer, reply_markup=markup):
+                    return
+            self._send(chat_id, answer, reply_markup=markup)
+
+    def _answer(
+        self, session: Session, command: str, args: Sequence[str] = (), *, chat_id: int | None = None, from_user: dict[str, Any] | None = None
+    ) -> str:
+        if command in ("/start", "/verify"):
+            return _answer_verify_or_start(session, command, args, chat_id, from_user, self._settings)
+        if command == "/help":
+            return _BOT_HELP_TEXT
+
+        role = self._caller_role(session, chat_id)
+        if role == "blocked":
+            return "🚫 Ваш профиль заблокирован администратором."
+        if command == "/recover":
+            return _answer_recover(session, chat_id, self._settings)
+
+        admin_commands = {"/users", "/tokens", "/cleanup", "/ttl", "/security", "/block", "/unblock", "/unbind", "/role"}
+        if command in admin_commands and role not in ("owner", "admin"):
+            return "⛔ Недостаточно прав: управление реестром и доступом доступно только Admin / Owner."
+
+        if command == "/token" and role not in ("owner", "admin"):
+            from netops.models import User
+
+            caller = session.scalar(select(User).where(User.telegram_chat_id == str(chat_id))) if chat_id is not None else None
+            if caller is None:
+                return "⛔ Недостаточно прав."
+            if args and args[0].strip() != caller.username:
+                return "⛔ Недостаточно прав: вы можете запросить ссылку только для своего профиля."
+            args = [caller.username]
+
+        if command in ("/collect", "/scan") and role not in ("owner", "admin", "operator"):
+            return "⛔ Недостаточно прав: запуск опроса и сканирования доступен с ролью Operator и выше."
+        if command == "/freeze" and args and role not in ("owner", "admin", "operator"):
+            return "⛔ Недостаточно прав: управление Kill Switch доступно с ролью Operator и выше."
+
+        simple_routes = {
+            "/overview": lambda: _overview_text(session, self._settings),
+            "/status": lambda: _status_text(session),
+            "/drift": lambda: _drift_text(session),
+            "/jobs": lambda: _jobs_text(session),
+            "/metrics": _metrics_text,
+            "/fabrics": lambda: _fabrics_text(session, self._settings),
+            "/stands": lambda: _fabrics_text(session, self._settings),
+            "/users": lambda: _users_text(session, self._settings),
+            "/tokens": lambda: _users_text(session, self._settings),
+            "/cleanup": lambda: _cleanup_duplicates_text(session, self._settings),
+            "/token": lambda: _token_text(session, args, settings=self._settings),
+            "/ttl": lambda: _set_user_ttl_text(session, args),
+            "/security": lambda: _security_text(self._settings),
+            "/block": lambda: _set_user_active_text(session, args, active=False),
+            "/unblock": lambda: _set_user_active_text(session, args, active=True),
+            "/unbind": lambda: _unbind_user_text(session, args),
+            "/role": lambda: _set_user_role_text(session, args),
+            "/collect": lambda: _collect_now_text(session, self._settings, args),
+            "/scan": lambda: _scan_now_text(session, self._session_factory, self._settings),
+            "/freeze": lambda: _freeze_text(args, self._settings),
+            "/ai": lambda: _ai_copilot_text(session, args, settings=self._settings),
+            "/ask": lambda: _ai_copilot_text(session, args, settings=self._settings),
+        }
+        handler = simple_routes.get(command)
+        if handler is not None:
+            return handler()
+        return _ai_copilot_text(session, [command.lstrip("/"), *args], settings=self._settings)
+
     def _new_alerts(self, session: Session) -> list[str]:
-        alerts: list[str] = []
-        records = session.scalars(
-            select(DriftRecord)
-            .where(DriftRecord.id > self._state.last_drift_id)
-            .order_by(DriftRecord.id)
-        ).all()
-        # Скан идёт каждые 15 минут и каждый раз пишет запись по каждому устройству.
-        # Поэтому сообщаем только о смене состояния, иначе бот спамит одним и тем же.
-        for record in records:
-            self._state.last_drift_id = max(self._state.last_drift_id, record.id)
-            hostname = record.device.hostname
-            if self._state.device_status.get(hostname) is record.status:
-                continue
-            previous = self._state.device_status.get(hostname)
-            self._state.device_status[hostname] = record.status
-            if record.status is DriftStatus.IN_SYNC:
-                if previous is not None:
-                    alerts.append(f"✅ {hostname}: снова совпадает с эталоном")
-                continue
-            alerts.append(f"⚠️ {hostname}: {record.status.value}\n{_drift_details(record)}")
-        # Плановая задача падает так же регулярно, поэтому один и тот же текст не повторяем.
-        for job in _failed_jobs(session):
-            if str(job.id) in self._state.reported_jobs:
-                continue
-            self._state.reported_jobs.add(str(job.id))
-            text = f"❌ Задача {job.type.value} упала: {job.error or 'без описания'}"
-            if text in self._state.reported_errors:
-                continue
-            self._state.reported_errors.add(text)
-            alerts.append(text)
-        return alerts
+        return _new_alerts(session, self._state, self._settings)
 
     def _broadcast(self, text: str) -> None:
         for chat_id in self._chat_ids:
-            self._api.send(chat_id, text)
-
-
-def _max_drift_id(session: Session) -> int:
-    record = session.scalars(select(DriftRecord).order_by(DriftRecord.id.desc()).limit(1)).first()
-    return record.id if record is not None else 0
-
-
-def _failed_jobs(session: Session) -> Sequence[Job]:
-    return session.scalars(
-        select(Job)
-        .where(Job.status == JobStatus.FAILED)
-        .order_by(Job.finished_at.desc())
-        .limit(MAX_ROWS)
-    ).all()
-
-
-def _drift_details(record: DriftRecord) -> str:
-    if record.error:
-        return record.error
-    return (
-        f"лишних строк: {len(record.unauthorized_lines)}, "
-        f"не хватает: {len(record.missing_lines)}"
-    )
-
-
-def _status_text(session: Session) -> str:
-    devices = session.scalars(select(Device).order_by(Device.hostname)).all()
-    if not devices:
-        return "Устройств в инвентаре нет"
-    by_status: dict[DeviceStatus, list[str]] = {}
-    for device in devices:
-        by_status.setdefault(device.status, []).append(device.hostname)
-    lines = [f"Устройств: {len(devices)}"]
-    lines.extend(
-        f"{status.value}: {len(hostnames)} ({', '.join(hostnames)})"
-        for status, hostnames in sorted(by_status.items())
-    )
-    return "\n".join(lines)
-
-
-# Берём последнюю проверку по каждому устройству, а не всю историю: иначе команда покажет
-# давно устранённый дрейф.
-def _drift_text(session: Session) -> str:
-    latest = select(func.max(DriftRecord.id).label("id")).group_by(DriftRecord.device_id).subquery()
-    records = session.scalars(
-        select(DriftRecord)
-        .join(latest, DriftRecord.id == latest.c.id)
-        .where(DriftRecord.status != DriftStatus.IN_SYNC)
-        .order_by(DriftRecord.checked_at.desc())
-        .limit(MAX_ROWS)
-    ).all()
-    if not records:
-        return "Дрейфа нет: все устройства совпадают с эталоном"
-    return "\n".join(
-        f"{record.device.hostname} — {record.status.value}, "
-        f"{record.checked_at:%d.%m %H:%M}: {_drift_details(record)}"
-        for record in records
-    )
-
-
-def _jobs_text(session: Session) -> str:
-    jobs = session.scalars(select(Job).order_by(Job.created_at.desc()).limit(5)).all()
-    if not jobs:
-        return "Задач пока не было"
-    return "\n".join(
-        f"{job.created_at:%d.%m %H:%M} {job.type.value} — {job.status.value}"
-        f" ({job.progress}%), автор {job.created_by}"
-        for job in jobs
-    )
-
-
-def _metrics_text(session: Session) -> str:
-    samples, collected_at = collector.latest(session)
-    if collected_at is None:
-        return "Метрики ещё не собирались"
-    lines = [f"Сбор: {collected_at:%d.%m %H:%M:%S} UTC"]
-    lines.extend(_summary(samples))
-    return "\n".join(lines)
-
-
-def _summary(samples: Iterable[Sample]) -> list[str]:
-    devices = drift = 0.0
-    unreachable: list[str] = []
-    bgp: list[tuple[str, float]] = []
-    ports: list[tuple[str, float]] = []
-    losses: list[tuple[str, float]] = []
-    for sample in samples:
-        peer = f"{sample.labels.get('hostname')} → {sample.labels.get('peer')}"
-        if sample.name == metrics.DEVICES_TOTAL:
-            devices += sample.value
-        elif sample.name == metrics.DRIFT_DEVICES:
-            drift = sample.value
-        elif sample.name == metrics.DEVICE_REACHABLE and not sample.value:
-            unreachable.append(str(sample.labels.get("hostname")))
-        elif sample.name == metrics.BGP_SESSION_UP:
-            bgp.append((peer, sample.value))
-        elif sample.name == metrics.INTERFACE_UP:
-            ports.append(
-                (f"{sample.labels.get('hostname')} {sample.labels.get('interface')}", sample.value)
-            )
-        elif sample.name == metrics.PING_LOSS:
-            losses.append((peer, sample.value))
-
-    lines = [
-        f"Устройств: {devices:g}"
-        + (f", не отвечают: {', '.join(unreachable)}" if unreachable else ", все отвечают")
-    ]
-    lines.append(_ratio("BGP Established", bgp))
-    lines.append(_ratio("Порты up/up", ports))
-    if losses:
-        worst, loss = max(losses, key=lambda item: item[1])
-        lines.append(f"Потери ping: до {loss:g}%" + (f" ({worst})" if loss else ""))
-    lines.append(f"Дрейф: {drift:g} устройств" if drift else "Дрейф: нет")
-    return lines
-
-
-def _ratio(title: str, items: list[tuple[str, float]]) -> str:
-    if not items:
-        return f"{title}: данных нет"
-    down = [name for name, value in items if not value]
-    line = f"{title}: {len(items) - len(down)} из {len(items)}"
-    return line + (f", проблемы: {', '.join(down)}" if down else "")
+            self._send(chat_id, text)
 
 
 def build_bot(settings: Settings, token: str) -> MetricsBot:
+    import os
+
+    from netops.services.notifier import load_saved_subscribers
+
+    if ":" in token and "PYTEST_CURRENT_TEST" not in os.environ and not getattr(settings, "telegram_bot_username", ""):
+        try:
+            with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/getMe", timeout=4.0) as resp:
+                body = json.loads(resp.read())
+                if body.get("ok"):
+                    uname = str((body.get("result") or {}).get("username") or "").strip().lstrip("@")
+                    if uname:
+                        settings.telegram_bot_username = uname
+                        settings.save_runtime_overlay({"telegram_bot_username": uname})
+        except Exception as exc:
+            logger.debug("Telegram getMe skipped: %s", exc)
+
     session_factory = build_session_factory(build_engine(settings.database_url))
-    return MetricsBot(session_factory, HttpTelegramApi(token), settings.telegram_chat_ids)
+    admin_chat_ids = list(settings.telegram_chat_ids)
+    chat_ids = list(admin_chat_ids)
+    for sub in load_saved_subscribers(settings):
+        if sub not in chat_ids:
+            chat_ids.append(sub)
+    return MetricsBot(
+        session_factory, HttpTelegramApi(token), chat_ids, admin_chat_ids=admin_chat_ids, open_registration=True, settings=settings
+    )
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings = get_settings()
-    if settings.telegram_bot_token is None or not settings.telegram_chat_ids:
-        logger.warning(
-            "Бот простаивает: задайте NETOPS_TELEGRAM_BOT_TOKEN и NETOPS_TELEGRAM_CHAT_IDS"
-        )
-        while True:
+    if settings.telegram_bot_token is None:
+        logger.warning("Бот простаивает: задайте NETOPS_TELEGRAM_BOT_TOKEN")
+        while settings.telegram_bot_token is None:
             time.sleep(IDLE_SECONDS)
+            settings.apply_runtime_overlay()
 
     bot = build_bot(settings, settings.telegram_bot_token.get_secret_value())
     bot.catch_up()
-    logger.info("Бот запущен, чатов: %d", len(settings.telegram_chat_ids))
+    bot.send_startup_audit()
+    alert_interval = max(3600, settings.drift_scan_interval_seconds)
+    last_alert_ts = time.monotonic()
+    logger.info(
+        "Бот @%s запущен (чатов: %d, верификация по коду: %s, интервал алертов: %ds)",
+        _bot_username(settings), len(bot._chat_ids), bot._open_registration, alert_interval,
+    )
     while True:
+        t0 = time.monotonic()
         bot.poll_once()
-        bot.send_alerts()
+        now = time.monotonic()
+        if now - last_alert_ts >= alert_interval:
+            bot.send_alerts()
+            last_alert_ts = now
+        if now - t0 < 2.0:
+            time.sleep(2.0)
 
 
 if __name__ == "__main__":
     main()
+
+__all__ = ["BotState", "HttpTelegramApi", "MetricsBot", "TelegramApi", "bind_telegram_chat_user", "build_bot", "ensure_user_token"]

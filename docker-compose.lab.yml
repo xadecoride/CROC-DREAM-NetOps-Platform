@@ -1,5 +1,5 @@
-# Оверлей для машины, где запущен Containerlab: подключает snmp-exporter к сети стенда,
-# чтобы опрашивать устройства по SNMP, и нацеливает платформу на живые узлы.
+# Оверлей для машины, где запущен Containerlab: подключает snmp-exporter и gnmic к сети
+# стенда, чтобы опрашивать устройства по SNMP и gNMI, и нацеливает платформу на живые узлы.
 #
 #   docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d --build
 #
@@ -9,13 +9,22 @@ services:
   snmp-exporter:
     networks: [default, clab_mgmt]
 
+  gnmic:
+    networks: [default, clab_mgmt]
+
   api: &live
+    networks: [default, clab_mgmt]
     environment:
       NETOPS_NETWORK_DRIVER: scrapli
-      NETOPS_INTENT_REPO_PATH: /data/intent-live
+      # Устройства стенда настроены с community public; в базовом compose v2c не проверяется.
+      NETOPS_SNMP_COMMUNITY: ${NETOPS_SNMP_COMMUNITY:-public}
+      NETOPS_INTENT_REPO_PATH: /data/intent
+      NETOPS_INVENTORY_FILE: ${NETOPS_INVENTORY_FILE:-inventory.yaml}
     volumes:
-      - ${INTENT_LIVE:-./intent-live}:/data/intent-live:ro
+      - ${INTENT:-./intent}:/data/intent:rw
       - ${TEMPLATES:-./templates}:/data/templates:ro
+      - ${LAB:-./lab/running}:/data/lab:rw
+      - ${MONITORING:-./monitoring}:/data/monitoring:ro
 
   worker: *live
   beat: *live

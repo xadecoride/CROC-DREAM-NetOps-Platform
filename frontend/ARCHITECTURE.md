@@ -25,7 +25,7 @@ Managing a heterogenous CLOS data center fabric (Cisco IOS-XE, Arista EOS, Huawe
    - In steady-state operation, the interface remains visually muted using dark neutral slate tones (`#090d16` background, `#111827` cards).
    - Signal colors (warning amber `#f59e0b`, critical crimson `#f43f5e`) are strictly reserved for genuine anomalies and predicted threshold breaches.
 2. **Pre-Attentive Perception (<3-Second Rule)**:
-   - High-level fabric health, active drift counts, and impending TimesFM telemetry anomalies are immediately visible on the 1080p dashboard without requiring scrolling.
+   - High-level fabric health, active drift counts, and impending Statistical Forecast telemetry anomalies are immediately visible on the 1080p dashboard without requiring scrolling.
 3. **Progressive Disclosure**:
    - High-level KPIs and topology health are displayed first. In-depth configuration diffs, BGP neighbor tables, and telemetry timeseries are loaded on demand via context drawers (`DeviceDrawer`) and modal inspectors without losing screen context.
 4. **Fitts's & Hick's Law Optimization**:
@@ -42,32 +42,33 @@ The application architecture is organized into a modular tree where state owners
 
 | # | Component | Path | Lines | Architectural Responsibility | Internal Hooks | Props & Event Callbacks |
 |---|---|---|---|---|---|---|
-| **—** | `App` | `src/App.tsx` | 530 | Root orchestrator: active tab routing, global modal state, RBAC token sync, adaptive polling (1.5s/5s), visibility lifecycle sync, and priority Escape key stack. | `useState`, `useEffect`, `useMemo`, `useCallback` | None (Application Root) |
-| **—** | `api` | `src/api.ts` | 650 | Centralized REST client: token management, typed API dispatch, error normalization, emergency SSH CLI execution, and share URL generation. | None (Class instance) | Exported singleton instance `api` |
-| **—** | `constants` | `src/constants.ts` | 45 | Platform constants: navigation tab descriptors (`TAB_DEFINITIONS`), vendor display names (`PLATFORM_NAMES`), and CLOS tier roles (`ROLE_NAMES`). | None (Static definitions) | Exported constants |
-| **1** | `Header` | `src/components/Header.tsx` | 166 | Global top navigation bar: API health pill, Copilot toggle, jury share trigger, Dark/Light theme switcher, RU/EN locale toggle, and RBAC role badge. | Stateless | `activeTab`, `setActiveTab`, `userRole`, `setUserRole`, `apiHealthy`, `copilotOpen`, `onToggleCopilot`, `locale`, `setLocale`, `theme`, `setTheme`, `onOpenWelcomeModal`, `onOpenShareModal` |
-| **2** | `Sidebar` | `src/components/Sidebar.tsx` | 102 | Desktop side navigation menu grouping routes into Overview, Inventory, Automation, and Testing categories with keyboard accessibility. | Stateless | `activeTab`, `setActiveTab`, `locale` |
-| **3** | `MobileNav` | `src/components/MobileNav.tsx` | 303 | Responsive mobile bottom navigation bar (4 primary tabs) + slide-up Bottom Sheet drawer for secondary views, role switching, and locale selection. | `useState` (`moreMenuOpen`) | `activeTab`, `setActiveTab`, `locale`, `theme`, `setTheme`, `userRole`, `setUserRole`, `setLocale`, `onToggleCopilot`, `onOpenSearch`, `onOpenShare` |
-| **4** | `Dashboard` | `src/components/Dashboard.tsx` | 666 | Executive fabric operations center: KPI metrics strip (<0.5s visual scan), onboarding empty-states, node sparkline grid, interactive CLOS 2D topology, TimesFM risk radar, and recent automation jobs. | `useState`, `useEffect`, `useMemo` | `devices`, `jobs`, `userRole`, `locale`, `onOpenTab`, `onOpenDevice`, `onRunDryRun`, `onOpenDiff`, `onSyncInventory` |
-| **5** | `DeviceList` | `src/components/DeviceList.tsx` | 532 | High-density inventory table (Zabbix/NetBox pattern): vendor/role filters, text search, separate `Oper Status` vs `Intent Status` columns, telemetry sparklines, 24h state timelines, and bulk actions. | `useState`, `useMemo` | `devices`, `loading`, `userRole`, `locale`, `onRefresh`, `onRunDryRun`, `onScanDrift`, `onSyncInventory`, `onLintIntent`, `onOpenDevice`, `onOpenDiff`, `onDeleteDevice` |
-| **6** | `DeviceDrawer` | `src/components/DeviceDrawer.tsx` | 415 | Contextual slide-over drawer (and mobile bottom sheet) for non-disruptive device inspection: Interface intents, BGP peer states, running-config preview, and quick dry-run/diff buttons. | `useState`, `useEffect` | `deviceId`, `onClose`, `userRole`, `locale`, `onOpenDiff`, `onRunDryRun`, `onOpenFullPage` |
-| **7** | `DevicePage` | `src/components/DevicePage.tsx` | 1236 | Comprehensive node passport: hardware specifications, IPAM/access profile, Git Intent model, interactive What-If TimesFM forecast simulator, live SSH Web CLI with fail-closed guard, and emergency actions. | `useState` (17 states), `useEffect` | `deviceId`, `userRole`, `locale`, `onBack`, `onRunDryRun`, `onScanDrift`, `onAskCopilot`, `onDeleteDevice` |
-| **8** | `DiffViewer` | `src/components/DiffViewer.tsx` | 630 | Hierarchical configuration diff inspector (`hier_config`): Monaco side-by-side / inline editor with lightweight fallback, AI Guard risk scoring (`api.explainDiff`), and commit-confirmed deployment button. | `useState`, `useEffect` | `jobs`, `selectedJobId`, `locale`, `theme`, `onSelectJob`, `onDeploy` |
-| **9** | `JobsView` | `src/components/JobsView.tsx` | 391 | Automation execution streamer: job list, stage progress bar, color-coded stage terminal logs (`preflight`, `render`, `diff`, `apply`, `rollback`), auto-scroll, log filtering, and Markdown compliance export. | `useState`, `useRef`, `useEffect` | `jobs`, `loading`, `selectedJobId`, `locale`, `onSelectJob`, `onDeploy`, `onOpenDiff`, `onRefresh` |
-| **10** | `DriftView` | `src/components/DriftView.tsx` | 278 | Configuration compliance audit console: fabric-wide compliance percentage, diff cards showing unauthorized additions (`+`) and missing intent (`-`), and 1-click automated remediation. | `useState`, `useEffect` | `locale`, `onRemediate`, `onScanDrift` |
-| **11** | `ChaosLabView` | `src/components/ChaosLabView.tsx` | 191 | Chaos Engineering testing studio: triggers for rogue ACL drift, Huawei BGP drift, physical port down, silent telemetry blackholes, and load surges, plus factory reset to Git baseline. | `useState` | `locale`, `onRefreshAll` |
-| **12** | `CopilotPanel` | `src/components/CopilotPanel.tsx` | 335 | Contextual AI assistant drawer: automatic binding of active screen and selected device ID, streaming message history, Markdown formatting, and embedded 1-Click Action buttons. | `useState`, `useRef`, `useCallback`, `useEffect` | `open`, `onClose`, `deviceId`, `locale`, `request`, `activeScreen`, `onRunDryRun`, `onOpenDiff`, `onScanDrift`, `onOpenDevice`, `onRemediate`, `onOpenTab` |
-| **13** | `CommandPalette`| `src/components/CommandPalette.tsx` | 84 | Global search palette (`Ctrl+K` / `Cmd+K`): fuzzy search across fabric devices (hostname, IP, vendor) and platform views with keyboard arrow navigation and Escape dismissal. | `useState`, `useRef`, `useMemo`, `useEffect` | `open`, `onClose`, `devices`, `onOpenDevice`, `onOpenTab` |
-| **14** | `DryRunModal` | `src/components/DryRunModal.tsx` | 263 | Pre-flight Dry-Run validation modal: Git branch/commit metadata, Pydantic lint status, automatic Blast Radius calculation (Low/Med/High, % fabric affected), target device pills, and Enter shortcut. | `useState`, `useMemo`, `useCallback`, `useEffect` | `open`, `onClose`, `onConfirm`, `deviceIds`, `devices`, `locale`, `gitBranch`, `gitCommit` |
-| **15** | `EmergencyHub` | `src/components/EmergencyHub.tsx` | 570 | Admin out-of-band operational hub: Zero-trust RBAC gate, live interactive SSH Web CLI to all 6 CLOS nodes with vendor presets, direct hot-patch studio, soft/hard fabric reset, and audit trail. | `useState` (13 states), `useEffect` | `currentRole`, `onSwitchRole` |
-| **16** | `ForecastChart`| `src/components/ForecastChart.tsx` | 384 | Vector SVG telemetry chart: TimesFM 3.0 median & confidence bounds, continuous risk bands (Normal 0-70%, Warning 70-85%, Critical 85-100%), and Grafana event markers with tooltips. | `useState`, `useMemo` | `data: Forecast` |
-| **17** | `TopologyMap` | `src/components/TopologyMap.tsx` | 501 | Dynamic 2D CLOS fabric SVG topology: automated layer tiering (Border, Spine, Leaf, Server), bandwidth utilization coloring, animated congestion links, and popovers with 1-click actions. | `useState`, `useMemo`, `useEffect` | `devices`, `alerts`, `locale`, `onSelectDevice`, `onOpenDiff`, `onRunDryRun` |
-| **18** | `AddDeviceModal`| `src/components/AddDeviceModal.tsx` | 561 | Two-step safe onboarding wizard: Step 1 initiates zero-trust SSH probe; Step 2 displays discovered hardware/LLDP attributes, sets platform/role, and registers device in `MONITORING_ONLY` mode. | `useState` (14 states) | `isOpen`, `onClose`, `onSuccess`, `userRole` |
-| **19** | `WelcomeModal` | `src/components/WelcomeModal.tsx` | 352 | First-time onboarding modal: auto-dismissed if `?token=` is present; supports instant Owner mode or remote cluster attachment via token and backend URL. | `useState`, `useEffect` | `isOpen`, `onClose`, `locale`, `setLocale` |
-| **20** | `ShareModal` | `src/components/ShareModal.tsx` | 168 | Access delegation dialog: one-click generation of read-only Jury access links (`?token=dev-jury-token`) and full administrative access links (`?token=dev-admin-token`). | `useState` | `isOpen`, `onClose`, `userRole`, `locale` |
-| **21** | `SlidesPresentation` | `src/components/SlidesPresentation.tsx` | 615 | Integrated 5-slide jury presentation: architectural tenets, end-to-end GitOps pipeline, multi-vendor syntax comparisons (Cisco, Arista, Juniper, Eltex, YADRO), and live demo launcher. | `useState`, `useCallback` | `onLaunchDemo`, `onOpenTab` |
-| **22** | `ShortcutsModal` | `src/components/ShortcutsModal.tsx` | 135 | Platform hotkey & RBAC reference modal: cheatsheet for `Ctrl+K`, `Esc`, `Enter`, `?`, role permissions matrix, and Esc stack dismissal. | stateless | `isOpen`, `onClose`, `locale` |
-| **23** | `ui` | `src/components/ui.tsx` | 362 | Atomic design primitives: `StatusBadge`, `OperStatusBadge`, `IntentStatusBadge`, `Sparkline`, `StateTimeline`, `ManagementModeBadge`, `Panel`, `BentoCard`, `JobStatusBadge`, and `Modal`. | `useEffect` (Inside `Modal` for Escape) | Shared styling and primitive props |
+| **—** | `App` | `src/App.tsx` | 382 | Root orchestrator: active tab routing, global modal state, RBAC token sync, adaptive polling (`useAppPolling`), visibility lifecycle sync, and priority Escape key stack. | `useState`, `useEffect`, `useMemo`, `useCallback` | None (Application Root) |
+| **—** | `api` | `src/api.ts` + `src/api/*` | 335 + 8 modules | Modular REST client (`auth`, `devices`, `jobs`, `drift`, `topology`, `stands`, `system`, `emergency`, `client`): token management, typed API dispatch, error normalization, and share URL generation. | None (Class instance) | Exported singleton instance `api` |
+| **—** | `constants` | `src/constants.ts` | 75 | Platform constants: navigation tab descriptors (`TAB_DEFINITIONS`), vendor display names (`PLATFORM_NAMES`), and CLOS tier roles (`ROLE_NAMES`). | None (Static definitions) | Exported constants |
+| **1** | `Header` | `src/components/layout/Header.tsx` | 285 | Global top navigation bar: Stand switcher, API health pill, Copilot toggle, jury share trigger, Dark/Light theme switcher, RU/EN locale toggle, and RBAC role badge. | Stateless | `activeTab`, `setActiveTab`, `userRole`, `setUserRole`, `apiHealthy`, `copilotOpen`, `onToggleCopilot`, `locale`, `setLocale`, `theme`, `setTheme`, `onOpenWelcomeModal`, `onOpenShareModal`, `onOpenStandsModal` |
+| **2** | `Sidebar` | `src/components/layout/Sidebar.tsx` | 109 | Desktop side navigation menu grouping routes into Overview, Inventory, Automation, and Testing categories with keyboard accessibility. | Stateless | `activeTab`, `setActiveTab`, `locale` |
+| **3** | `MobileNav` | `src/components/layout/MobileNav.tsx` | 282 | Responsive mobile bottom navigation bar (4 primary tabs) + slide-up Bottom Sheet drawer for secondary views, role switching, and locale selection. | `useState` (`moreMenuOpen`) | `activeTab`, `setActiveTab`, `locale`, `theme`, `setTheme`, `userRole`, `setUserRole`, `setLocale`, `onToggleCopilot`, `onOpenSearch`, `onOpenShare` |
+| **4** | `Dashboard` | `src/components/views/Dashboard.tsx` | 485 | Executive fabric operations center: KPI metrics strip (<0.5s visual scan), onboarding empty-states, node sparkline grid, interactive CLOS 2D topology, Statistical Forecast risk radar, and recent automation jobs. | `useState`, `useEffect`, `useMemo` | `devices`, `jobs`, `userRole`, `locale`, `onOpenTab`, `onOpenDevice`, `onRunDryRun`, `onOpenDiff`, `onSyncInventory` |
+| **5** | `DeviceList` | `src/components/views/DeviceList.tsx` | 350 | High-density inventory table (Zabbix/NetBox pattern): vendor/role filters, text search, separate `Oper Status` vs `Intent Status` columns, telemetry sparklines, 24h state timelines, and bulk actions. | `useState`, `useMemo` | `devices`, `loading`, `userRole`, `locale`, `onRefresh`, `onRunDryRun`, `onScanDrift`, `onSyncInventory`, `onLintIntent`, `onOpenDevice`, `onOpenDiff`, `onDeleteDevice` |
+| **6** | `DeviceDrawer` | `src/components/modals/DeviceDrawer.tsx` | 412 | Contextual slide-over drawer (and mobile bottom sheet) for non-disruptive device inspection: Interface intents, BGP peer states, running-config preview, and quick dry-run/diff buttons. | `useState`, `useEffect` | `deviceId`, `onClose`, `userRole`, `locale`, `onOpenDiff`, `onRunDryRun`, `onOpenFullPage` |
+| **7** | `DevicePage` | `src/components/views/DevicePage.tsx` | 462 | Comprehensive node passport (with `DeviceAccessTab`, `DeviceForecastTab`, `DeviceCliTab`): hardware specifications, IPAM/access profile, Git Intent model, What-If forecast simulator, and live SSH Web CLI. | `useState`, `useEffect` | `deviceId`, `userRole`, `locale`, `onBack`, `onRunDryRun`, `onScanDrift`, `onAskCopilot`, `onDeleteDevice` |
+| **8** | `DiffViewer` | `src/components/views/DiffViewer.tsx` | 476 | Hierarchical configuration diff inspector (`hier_config`): Monaco side-by-side / inline editor with lightweight fallback, AI Guard risk scoring (`api.explainDiff`), and commit-confirmed deployment button. | `useState`, `useEffect` | `jobs`, `selectedJobId`, `locale`, `theme`, `onSelectJob`, `onDeploy` |
+| **9** | `JobsView` | `src/components/views/JobsView.tsx` | 458 | Automation execution streamer: job list, stage progress bar, color-coded stage terminal logs (`preflight`, `render`, `diff`, `apply`, `rollback`), auto-scroll, log filtering, and Markdown compliance export. | `useState`, `useRef`, `useEffect` | `jobs`, `loading`, `selectedJobId`, `locale`, `onSelectJob`, `onDeploy`, `onOpenDiff`, `onRefresh` |
+| **10** | `DriftView` | `src/components/views/DriftView.tsx` | 306 | Configuration compliance audit console: fabric-wide compliance percentage, diff cards showing unauthorized additions (`+`) and missing intent (`-`), and 1-click automated remediation. | `useState`, `useEffect` | `locale`, `onRemediate`, `onScanDrift` |
+| **11** | `ChaosLabView` | `src/components/views/ChaosLabView.tsx` | 191 | Chaos Engineering testing studio: triggers for rogue ACL drift, Huawei BGP drift, physical port down, silent telemetry blackholes, and load surges, plus factory reset to Git baseline. | `useState` | `locale`, `onRefreshAll` |
+| **12** | `CopilotPanel` | `src/components/modals/CopilotPanel.tsx` | 341 | Contextual AI assistant drawer: automatic binding of active screen and selected device ID, streaming message history, Markdown formatting, and embedded 1-Click Action buttons. | `useState`, `useRef`, `useCallback`, `useEffect` | `open`, `onClose`, `deviceId`, `locale`, `request`, `activeScreen`, `onRunDryRun`, `onOpenDiff`, `onScanDrift`, `onOpenDevice`, `onRemediate`, `onOpenTab` |
+| **13** | `CommandPalette`| `src/components/layout/CommandPalette.tsx` | 84 | Global search palette (`Ctrl+K` / `Cmd+K`): fuzzy search across fabric devices (hostname, IP, vendor) and platform views with keyboard arrow navigation and Escape dismissal. | `useState`, `useRef`, `useMemo`, `useEffect` | `open`, `onClose`, `devices`, `onOpenDevice`, `onOpenTab` |
+| **14** | `DryRunModal` | `src/components/modals/DryRunModal.tsx` | 263 | Pre-flight Dry-Run validation modal: Git branch/commit metadata, Pydantic lint status, automatic Blast Radius calculation (Low/Med/High, % fabric affected), target device pills, and Enter shortcut. | `useState`, `useMemo`, `useCallback`, `useEffect` | `open`, `onClose`, `onConfirm`, `deviceIds`, `devices`, `locale`, `gitBranch`, `gitCommit` |
+| **15** | `EmergencyHub` | `src/components/views/EmergencyHub.tsx` | 380 | Admin out-of-band operational hub: Zero-trust RBAC gate, live interactive SSH Web CLI (`EmergencyCliTab`), direct hot-patch studio, soft/hard fabric reset, and audit trail. | `useState`, `useEffect` | `currentRole`, `onSwitchRole` |
+| **16** | `ForecastChart`| `src/components/charts/ForecastChart.tsx` | 396 | Vector SVG telemetry chart: Statistical Forecast median & confidence bounds, continuous risk bands (Normal 0-70%, Warning 70-85%, Critical 85-100%), and Grafana event markers with tooltips. | `useState`, `useMemo` | `data: Forecast` |
+| **17** | `TopologyMap` | `src/components/charts/TopologyMap.tsx` | 538 | Dynamic 2D CLOS fabric SVG topology (with `TopologyCommutationPanel` & `TopologyMacroFleetView`): L1-L3 layer filtering, commutation matrix, bandwidth coloring, and popovers with 1-click actions. | `useState`, `useMemo`, `useEffect` | `devices`, `alerts`, `locale`, `onSelectDevice`, `onOpenDiff`, `onRunDryRun` |
+| **18** | `AddDeviceModal`| `src/components/modals/AddDeviceModal.tsx` | 375 | Two-step safe onboarding wizard (`AddDeviceStep1Form`, `AddDeviceStep2Confirm`): Step 1 initiates zero-trust SSH probe; Step 2 displays discovered hardware/LLDP attributes and registers device. | `useState` | `isOpen`, `onClose`, `onSuccess`, `userRole` |
+| **19** | `WelcomeModal` | `src/components/modals/WelcomeModal.tsx` | 369 | First-time onboarding modal: auto-dismissed if `?token=` is present; supports local Owner mode or remote cluster attachment via 6-digit access code or token (`crk_*` / `inv_*`). | `useState`, `useEffect` | `isOpen`, `onClose`, `locale`, `setLocale` |
+| **20** | `ShareModal` | `src/components/modals/ShareModal.tsx` | 369 | Access delegation & Tunnel Hub dialog (`ShareModalParticipantsTab`, `ShareModalTunnelSection`): 6-digit code generation, personal token issuance (`inv_*` / `crk_*`), stand isolation (`allowed_system`), and Static QR snapshot generation. | `useState` | `isOpen`, `onClose`, `userRole`, `locale` |
+| **21** | `StandsModal` | `src/components/modals/StandsModal.tsx` | 485 | Multi-stand management modal: switching between `demo`, `live_lab`, and custom isolated stands (`intent/stands/<id>`), importing YAML topologies, and runtime overlay configuration. | `useState`, `useEffect` | `isOpen`, `onClose`, `onStandSwitched`, `locale` |
+| **22** | `IntentEditor` | `src/components/views/IntentEditor.tsx` | 435 | Interactive Git SoT YAML intent editor (`IntentInterfacesEditor`, `IntentBgpPeersEditor`): editing interfaces, BGP peers, and global settings with instant Jinja2 template rendering preview. | `useState`, `useEffect` | `devices`, `userRole`, `locale`, `onRunDryRun` |
+| **23** | `ShortcutsModal` | `src/components/modals/ShortcutsModal.tsx` | 135 | Platform hotkey & RBAC reference modal: cheatsheet for `Ctrl+K`, `Esc`, `Enter`, `?`, role permissions matrix, and Esc stack dismissal. | stateless | `isOpen`, `onClose`, `locale` |
+| **24** | `ui` | `src/components/layout/ui.tsx` | 396 | Atomic design primitives: `StatusBadge`, `OperStatusBadge`, `IntentStatusBadge`, `Sparkline`, `StateTimeline`, `ManagementModeBadge`, `Panel`, `BentoCard`, `JobStatusBadge`, and `Modal`. | `useEffect` (Inside `Modal` for Escape) | Shared styling and primitive props |
 
 ---
 
@@ -332,7 +333,7 @@ sequenceDiagram
     participant CL as ChaosLabView
     participant API as NetOpsApiClient
     participant BE as Backend Chaos Controller
-    participant NET as Network Fabric & TimesFM Model
+    participant NET as Network Fabric & Statistical Forecast Model
 
     OP->>CL: Select Chaos Scenario ('acl_drift', 'port_down', 'ai_blackhole')
     CL->>API: injectChaos(scenario)
@@ -370,7 +371,8 @@ The platform provides a four-tier Role-Based Access Control hierarchy:
               [ Viewer ]  <-- Read-only mode for jury; mutation controls suppressed
 ```
 
-- When a role is selected via `Header`, `WelcomeModal`, or URL parameter (`?token=dev-jury-token`), the token is persisted to `localStorage` and synchronized with `api.setToken()`.
+- When a role is selected via `Header`, `WelcomeModal`, or URL parameter (`?token=crk_...` / `?token=inv_...`), the token is persisted to `localStorage` and synchronized with `api.setToken()`.
+- Local Owner Console (`localhost:5173`) authenticates via the `local-owner-console` loopback check.
 - Every outgoing HTTP request attaches `Authorization: Bearer <token>`.
 - UI buttons for destructive or mutating operations are dynamically hidden or disabled for read-only roles.
 
@@ -398,15 +400,16 @@ The theme system enforces ergonomic visual discipline:
 ### 4.1. Route-Level Code-Splitting & Monaco Decoupling
 To achieve fast First Contentful Paint (FCP) and low Total Blocking Time (TBT), heavy secondary views and third-party libraries are isolated into asynchronous chunks using `React.lazy()` and `Suspense`:
 
-- **Main Entry Chunk (`dist/assets/index-*.js`)**: Kept at **~126 kB** (gzip: ~31 kB), well below the 150 kB threshold.
-- **Monaco Editor Chunk (`dist/assets/monaco-*.js`)**: Decoupled to **~14 kB** (gzip: ~4.7 kB), loaded only when navigating to `DiffViewer`.
-- **Heavy View Chunks**: `DevicePage` (54 kB), `EmergencyHub` (20.5 kB), `SlidesPresentation` (29.5 kB), and `DiffViewer` (18.5 kB) load on demand with spinner fallbacks.
+- **Main Entry Chunk (`dist/assets/index-*.js`)**: Kept well below the 150 kB threshold.
+- **Monaco Editor Chunk (`dist/assets/monaco-*.js`)**: Decoupled and loaded only when navigating to `DiffViewer`.
+- **Heavy View Chunks**: `DevicePage`, `EmergencyHub`, `IntentEditor`, and `DiffViewer` load on demand with spinner fallbacks.
 
 ```ts
 // src/App.tsx
-const DevicePage = lazy(() => import('./components/DevicePage').then(m => ({ default: m.DevicePage })));
-const DiffViewer = lazy(() => import('./components/DiffViewer').then(m => ({ default: m.DiffViewer })));
-const EmergencyHub = lazy(() => import('./components/EmergencyHub').then(m => ({ default: m.EmergencyHub })));
+const DevicePage = lazy(() => import('./components/views/DevicePage').then(m => ({ default: m.DevicePage })));
+const DiffViewer = lazy(() => import('./components/views/DiffViewer').then(m => ({ default: m.DiffViewer })));
+const EmergencyHub = lazy(() => import('./components/views/EmergencyHub').then(m => ({ default: m.EmergencyHub })));
+const IntentEditor = lazy(() => import('./components/views/IntentEditor').then(m => ({ default: m.IntentEditor })));
 ```
 
 ### 4.2. Referential Polling Bail-Out
@@ -456,7 +459,7 @@ If `areDevicesEqual` and `areJobsEqual` return `true`, state setters are skipped
 | **Browser Console Cleanliness** | Unhandled Exceptions & Errors | Playwright Test Suite | `console.error == 0`, `page_error == 0` |
 | **Cognitive Ergonomics** | 1080p Zero-Scroll Overview | `probe_m3_ergonomics.py` | Full fabric status visible in <3 seconds |
 | **Keyboard Accessibility** | Priority Modal Dismissal | `probe_m3_ergonomics.py` | `Escape` priority: DryRunModal -> Search -> Copilot |
-| **Forecast Visualization** | TimesFM Quantiles & Event Markers | `probe_forecast_chart.py` | 4 marker types, gradient bands, 0 out-of-bounds exceptions |
+| **Forecast Visualization** | Statistical Forecast Quantiles & Event Markers | `probe_forecast_chart.py` | 4 marker types, gradient bands, 0 out-of-bounds exceptions |
 
 ### 5.1. Automated Playwright Verification Suites
 
@@ -470,7 +473,7 @@ If `areDevicesEqual` and `areJobsEqual` return `true`, state setters are skipped
    - Verifies contextual AI Copilot synchronization (active screen and device payload forwarding).
    - Validates that `console.error` count equals 0 throughout all test flows.
 
-2. **Forecast Chart & TimesFM Suite (`tests/probe_forecast_chart.py`)**:
+2. **Forecast Chart & Statistical Forecast Suite (`tests/probe_forecast_chart.py`)**:
    - Intercepts API calls to test edge-case telemetry payloads.
    - Tests event markers (`DEPLOY`, `DRIFT_DETECTED`, `REMEDIATE`, `CHAOS`) and their interactive hover tooltips.
    - Verifies gradient threshold bands (Normal 0-70%, Warning 70-85%, Critical 85-100%).

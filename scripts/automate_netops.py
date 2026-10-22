@@ -70,9 +70,11 @@ def action_render() -> dict[str, str]:
     renderer = JinjaConfigRenderer(templates_dir)
 
     rendered_configs: dict[str, str] = {}
+    failed: list[str] = []
     for d in snapshot.inventory.devices:
         dev_intent = snapshot.intents.get(d.hostname)
         if not dev_intent:
+            logger.warning("! %s: нет intent-спецификации, устройство пропущено при рендеринге", d.hostname)
             continue
         try:
             cfg = renderer.render(device=d, intent=dev_intent)
@@ -80,7 +82,27 @@ def action_render() -> dict[str, str]:
             logger.info("✓ %s (%s): сгенерировано %d байт конфигурации", d.hostname, d.platform.value, len(cfg))
         except Exception as exc:
             logger.error("✗ %s (%s): ошибка рендеринга: %s", d.hostname, d.platform.value, exc)
+            failed.append(d.hostname)
+    if failed:
+        # Не возвращаем частичный результат: иначе diff/drift/комплаенс считаются только по успешным устройствам.
+        raise RuntimeError(f"Ошибка рендеринга конфигурации для устройств: {', '.join(failed)}")
     return rendered_configs
+
+
+def _config_lines(cfg: str) -> list[str]:
+    """Flatten config into ordered lines qualified by their parent path (by indentation)."""
+    out: list[str] = []
+    stack: list[tuple[int, str]] = []
+    for raw in cfg.splitlines():
+        s = raw.strip()
+        if not s or s.startswith(('!', '#')):
+            continue
+        indent = len(raw) - len(raw.lstrip())
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        out.append(" > ".join([p for _, p in stack] + [s]))
+        stack.append((indent, s))
+    return out
 
 
 def action_diff() -> dict[str, Any]:
@@ -94,18 +116,25 @@ def action_diff() -> dict[str, Any]:
     for hostname, target_cfg in rendered.items():
         running_path = lab_running / f"{hostname}.cfg"
         running_cfg = running_path.read_text(encoding="utf-8") if running_path.exists() else ""
+        
+        target_lines = _config_lines(target_cfg)
+        running_lines = _config_lines(running_cfg)
 
-        target_lines = {line.strip() for line in target_cfg.splitlines() if line.strip() and not line.strip().startswith(('!', '#'))}
-        running_lines = {line.strip() for line in running_cfg.splitlines() if line.strip() and not line.strip().startswith(('!', '#'))}
-
-        added = sorted(target_lines - running_lines)
-        removed = sorted(running_lines - target_lines)
+        from collections import Counter
+        added = sorted((Counter(target_lines) - Counter(running_lines)).elements())
+        removed = sorted((Counter(running_lines) - Counter(target_lines)).elements())
+        t_set, r_set = set(target_lines), set(running_lines)
+        reordered = [l for l in target_lines if l in r_set] != [l for l in running_lines if l in t_set]
         diff_report[hostname] = {
-            "has_diff": len(added) > 0 or len(removed) > 0,
+            "has_diff": len(added) > 0 or len(removed) > 0 or reordered,
             "added_count": len(added),
             "removed_count": len(removed),
+            "reordered": reordered,
             "added": added[:5],
-            "removed": removed[:5]
+            "removed": removed[:5],
+            # Полные списки нужны AI Guard: превью [:5] не должно скрывать опасные изменения.
+            "added_all": added,
+            "removed_all": removed
         }
         status = "DRIFT DETECTED" if diff_report[hostname]["has_diff"] else "IN SYNC"
         logger.info("   * %s: %s (+%d / -%d строк)", hostname, status, len(added), len(removed))
@@ -120,14 +149,30 @@ def action_ai_guard(diff_report: dict[str, Any] | None = None) -> bool:
 
     logger.info("--> [4/7] AI Guard & Safety Pre-flight Verification...")
     safe = True
-    dangerous_keywords = ["no router bgp", "shutdown GigabitEthernet1", "shutdown MEth0/0/0", "shutdown Management0", "no ip route 0.0.0.0"]
+    import re
+    # Опасные строки среди ДОБАВЛЯЕМЫХ (команды отключения/отмены) — полные совпадения по иерархическому пути.
+    dangerous_added = [re.compile(p) for p in (
+        r"^(?:no router bgp|undo bgp)\b",
+        r"^(?:no ip route 0\.0\.0\.0|undo ip route-static 0\.0\.0\.0)\b",
+        r"^interface (?:GigabitEthernet1|MEth0/0/0|Management0) > shutdown$",
+    )]
+    # Опасные строки среди УДАЛЯЕМЫХ (пропадает критическая конфигурация).
+    dangerous_removed = [re.compile(p) for p in (
+        r"^router bgp \d+$",
+        r"^bgp \d+$",
+        r"^ip route 0\.0\.0\.0 ",
+        r"^ip route-static 0\.0\.0\.0 ",
+    )]
 
     for hostname, info in diff_report.items():
-        removed = info.get("removed", [])
-        for line in removed:
-            for kw in dangerous_keywords:
-                if kw in line:
-                    logger.error("⛔ [CRITICAL SAFETY ALERT] %s: Обнаружена попытка удаления критической функции: '%s'!", hostname, line)
+        checks = (
+            ("добавления", info.get("added_all", info.get("added", [])), dangerous_added),
+            ("удаления", info.get("removed_all", info.get("removed", [])), dangerous_removed),
+        )
+        for kind, lines, patterns in checks:
+            for line in lines:
+                if any(p.search(line) for p in patterns):
+                    logger.error("⛔ [CRITICAL SAFETY ALERT] %s: Опасное изменение (%s) критической функции: '%s'!", hostname, kind, line)
                     safe = False
 
     if safe:
@@ -138,9 +183,10 @@ def action_ai_guard(diff_report: dict[str, Any] | None = None) -> bool:
 def action_telemetry_and_health() -> dict[str, Any]:
     """Verify infrastructure health and telephony VoIP/SIP metrics."""
     logger.info("--> [5/7] Сбор телеметрии здоровья оборудования и сервисов телефонии...")
-
+    
     # 1. Device metrics
     health_data = {
+        "source": "simulated",  # статические значения, реальный опрос оборудования не выполняется
         "nodes": [
             {"hostname": "spine-1.croc.lab", "role": "spine", "platform": "cisco_iosxe", "cpu_percent": 27.4, "ram_used_mb": 3986, "ram_total_mb": 4096, "bgp_established": 2, "temp_c": 38},
             {"hostname": "spine-2.croc.lab", "role": "spine", "platform": "arista_eos", "cpu_percent": 1.2, "ram_used_mb": 899, "ram_total_mb": 2048, "bgp_established": 2, "temp_c": 36},
@@ -154,11 +200,11 @@ def action_telemetry_and_health() -> dict[str, Any]:
             "jitter_ms": 2.4,
             "packet_loss_percent": 0.01,
             "rtt_latency_ms": 14.2,
-            "status": "HEALTHY",
+            "status": "UNKNOWN",  # значения выше — симуляция, статус сервиса не измерялся
         }
     }
-    logger.info("✓ Телеметрия узлов: все 4 устройства активны, BGP сессии 100% Established.")
-    logger.info("✓ Телефония: MOS=%.2f/5.00, Jitter=%.1f ms, Packet Loss=%.2f%%, Активных SIP-каналов=%d",
+    logger.warning("⚠ Телеметрия узлов — СИМУЛЯЦИЯ (статические значения): реальная доступность устройств и состояние BGP не проверялись.")
+    logger.warning("⚠ Телефония (СИМУЛЯЦИЯ, не измерено): MOS=%.2f/5.00, Jitter=%.1f ms, Packet Loss=%.2f%%, Активных SIP-каналов=%d",
                 health_data["telephony_service"]["mean_opinion_score_mos"],
                 health_data["telephony_service"]["jitter_ms"],
                 health_data["telephony_service"]["packet_loss_percent"],
@@ -192,28 +238,28 @@ def action_full_pipeline() -> None:
     print("   CROC DREAM NetOps Platform — Industrial Pipeline (Annushka)   ")
     print("=================================================================")
     t0 = time.time()
-
+    
     # 1. Validation
     if not action_validate():
         sys.exit(1)
-
+        
     # 2. Rendering
     action_render()
-
+    
     # 3. Diff
     diffs = action_diff()
-
+    
     # 4. Safety Guard
     if not action_ai_guard(diffs):
         logger.error("Остановка пайплайна по соображениям безопасности!")
         sys.exit(1)
-
+        
     # 5. Telemetry & Telephony
     action_telemetry_and_health()
-
+    
     # 6. Drift
     action_drift_audit()
-
+    
     elapsed = time.time() - t0
     logger.info("✓ Сквозной пайплайн NetOps успешно выполнен за %.2f сек.", elapsed)
 

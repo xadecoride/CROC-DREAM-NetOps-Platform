@@ -1,0 +1,7 @@
+{% macro endpoint(value) %}{% if value == "any" %}any{% else %}{{ value.with_prefixlen }}{% endif %}{% endmacro %}
+{% for acl in intent.acls %}
+ip access-list {{ acl.name }}
+{% for rule in acl.rules %}
+  seq {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} {{ endpoint(rule.source) }} {{ endpoint(rule.destination) }}
+{% endfor %}
+{% endfor %}

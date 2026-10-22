@@ -1,0 +1,43 @@
+# gnmic — потоковый сборщик gNMI (OpenConfig). Платформа сама решает, какие устройства
+# доказанно умеют gNMI (gRPC Capabilities), и пишет их в /data/lab/gnmic_targets.yaml
+# (backend/netops/telemetry/targets.py). gnmic перечитывает файл раз в 30 секунд.
+#
+# Логин/пароль — из окружения GNMIC_USERNAME / GNMIC_PASSWORD (в файле целей паролей нет).
+encoding: json_ietf
+
+loader:
+  type: file
+  path: /data/lab/gnmic_targets.yaml
+  interval: 30s
+
+# Подписываемся только на нужные листья, чтобы не раздувать кардинальность в Prometheus/VictoriaMetrics.
+subscriptions:
+  interfaces:
+    paths:
+      - /interfaces/interface/state/counters
+      - /interfaces/interface/state/oper-status
+    mode: stream
+    stream-mode: sample
+    sample-interval: 30s
+  system:
+    paths:
+      - /components/component/cpu/utilization/state
+      - /system/memory/state
+    mode: stream
+    stream-mode: sample
+    sample-interval: 30s
+  bgp:
+    paths:
+      - /network-instances/network-instance/protocols/protocol/bgp/neighbors/neighbor/state/session-state
+    mode: stream
+    stream-mode: on_change
+
+outputs:
+  prom:
+    type: prometheus
+    listen: :9804
+    path: /metrics
+    metric-prefix: gnmi
+    expiration: 120s
+    # session-state и oper-status — строки; как метки они пригодны для алертов.
+    strings-as-labels: true

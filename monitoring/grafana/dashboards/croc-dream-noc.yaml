@@ -1,0 +1,282 @@
+# Настраиваемая декларативная конфигурация NOC-дашборда CROC DREAM (мульти-фабрика).
+# При старте платформы и обновлении коллекторов синхронизируется в PostgreSQL (system_state + БД Grafana).
+uid: croc-dream-noc
+title: "CROC DREAM — Multi-Fabric NOC"
+tags:
+  - netops
+  - croc-dream
+  - multi-fabric
+timezone: browser
+schemaVersion: 39
+version: 3
+refresh: "15s"
+time:
+  from: "now-1h"
+  to: "now"
+
+templating:
+  list:
+    - name: fabric_id
+      label: "Fabric / Stand"
+      type: query
+      datasource:
+        type: prometheus
+        uid: victoriametrics
+      query: "label_values(netops_device_reachable, fabric_id)"
+      includeAll: true
+      allValue: ".*"
+      multi: true
+      current:
+        selected: true
+        text: All
+        value: "$__all"
+    - name: hostname
+      label: "Switch / Node"
+      type: query
+      datasource:
+        type: prometheus
+        uid: victoriametrics
+      query: 'label_values(netops_device_reachable{fabric_id=~"$fabric_id"}, hostname)'
+      includeAll: true
+      allValue: ".*"
+      multi: true
+      current:
+        selected: true
+        text: All
+        value: "$__all"
+
+panels:
+  - id: 1
+    title: "Fleet Devices by Status"
+    type: stat
+    gridPos: { h: 5, w: 8, x: 0, y: 0 }
+    datasource: { type: prometheus, uid: victoriametrics }
+    options:
+      colorMode: background_solid
+      graphMode: area
+      justifyMode: auto
+      reduceOptions:
+        calcs: ["lastNotNull"]
+    fieldConfig:
+      defaults:
+        color: { mode: thresholds }
+        thresholds:
+          mode: absolute
+          steps:
+            - { color: "#10b981", value: null }
+    targets:
+      - expr: max by (status) (netops_devices_total)
+        legendFormat: "{{status}}"
+        refId: A
+
+  - id: 2
+    title: "Active Configuration Drift Count"
+    type: stat
+    gridPos: { h: 5, w: 8, x: 8, y: 0 }
+    datasource: { type: prometheus, uid: victoriametrics }
+    options:
+      colorMode: background_solid
+      graphMode: area
+      reduceOptions:
+        calcs: ["lastNotNull"]
+    fieldConfig:
+      defaults:
+        color: { mode: thresholds }
+        thresholds:
+          mode: absolute
+          steps:
+            - { color: "#10b981", value: null }
+            - { color: "#f59e0b", value: 1 }
+            - { color: "#f43f5e", value: 3 }
+    targets:
+      - expr: "max(netops_drift_devices_total or netops_drift_devices)"
+        legendFormat: "Drifted Devices"
+        refId: A
+
+  - id: 3
+    title: "Reachable Nodes Across Stands"
+    type: gauge
+    gridPos: { h: 5, w: 8, x: 16, y: 0 }
+    datasource: { type: prometheus, uid: victoriametrics }
+    options:
+      showThresholdLabels: false
+      showThresholdMarkers: true
+      reduceOptions:
+        calcs: ["lastNotNull"]
+    fieldConfig:
+      defaults:
+        min: 0
+        max: 8
+        color: { mode: thresholds }
+        thresholds:
+          mode: absolute
+          steps:
+            - { color: "#f43f5e", value: null }
+            - { color: "#f59e0b", value: 4 }
+            - { color: "#10b981", value: 7 }
+    targets:
+      - expr: 'sum(max by (fabric_id, hostname) (netops_device_reachable{fabric_id=~"$fabric_id"}))'
+        legendFormat: "Online Nodes"
+        refId: A
+
+  - id: 4
+    title: "Switch CPU Utilization (%)"
+    type: timeseries
+    gridPos: { h: 8, w: 12, x: 0, y: 5 }
+    datasource: { type: prometheus, uid: victoriametrics }
+    fieldConfig:
+      defaults:
+        unit: percent
+        min: 0
+        max: 100
+        color: { mode: palette-classic }
+        custom:
+          drawStyle: line
+          lineInterpolation: smooth
+          lineWidth: 2
+          fillOpacity: 18
+          gradientMode: opacity
+          showPoints: never
+          spanNulls: true
+    targets:
+      - expr: 'max by (fabric_id, hostname) (netops_device_cpu_utilization_percent{fabric_id=~"$fabric_id", hostname=~"$hostname"} > 0 or netops_cpu_usage_percent{fabric_id=~"$fabric_id", hostname=~"$hostname"} > 0 or clamp_min(cpmCPUTotal5secRev{fabric_id=~"$fabric_id", hostname=~"$hostname"} or cpmCPUTotal1minRev{fabric_id=~"$fabric_id", hostname=~"$hostname"}, 1))'
+        legendFormat: "{{hostname}} CPU"
+        refId: A
+
+  - id: 5
+    title: "Switch Memory & Uplink Utilization (%)"
+    type: timeseries
+    gridPos: { h: 8, w: 12, x: 12, y: 5 }
+    datasource: { type: prometheus, uid: victoriametrics }
+    fieldConfig:
+      defaults:
+        unit: percent
+        min: 0
+        max: 100
+        color: { mode: palette-classic }
+        custom:
+          drawStyle: line
+          lineInterpolation: smooth
+          lineWidth: 2
+          fillOpacity: 16
+          gradientMode: opacity
+          showPoints: never
+          spanNulls: true
+    targets:
+      - expr: 'max by (fabric_id, hostname) (netops_device_memory_utilization_percent{fabric_id=~"$fabric_id", hostname=~"$hostname"} or netops_memory_usage_percent{fabric_id=~"$fabric_id", hostname=~"$hostname"})'
+        legendFormat: "{{hostname}} RAM"
+        refId: A
+      - expr: 'max by (fabric_id, hostname) (netops_device_uplink_utilization_percent{fabric_id=~"$fabric_id", hostname=~"$hostname"} > 0.01 or netops_uplink_util_percent{fabric_id=~"$fabric_id", hostname=~"$hostname"} > 0.01 or clamp_min(clamp_max((rate(gnmi_interfaces_interface_state_counters_in_octets{fabric_id=~"$fabric_id", hostname=~"$hostname"}[2m]) + rate(gnmi_interfaces_interface_state_counters_out_octets{fabric_id=~"$fabric_id", hostname=~"$hostname"}[2m])) * 8 / 1e4, 100), 0.1) or clamp_min(clamp_max((rate(ifHCInOctets{fabric_id=~"$fabric_id", hostname=~"$hostname"}[2m]) + rate(ifHCOutOctets{fabric_id=~"$fabric_id", hostname=~"$hostname"}[2m])) * 8 / 1e4, 100), 0.1) or clamp_min(netops_device_uplink_utilization_percent{fabric_id=~"$fabric_id", hostname=~"$hostname"}, 0.1))'
+        legendFormat: "{{hostname}} Uplink"
+        refId: B
+
+  - id: 6
+    title: "BGP Session Health & Accepted Prefixes"
+    type: timeseries
+    gridPos: { h: 8, w: 12, x: 0, y: 13 }
+    datasource: { type: prometheus, uid: victoriametrics }
+    fieldConfig:
+      defaults:
+        color: { mode: palette-classic }
+        custom:
+          drawStyle: line
+          lineInterpolation: smooth
+          lineWidth: 2
+          fillOpacity: 15
+          gradientMode: opacity
+          showPoints: never
+          spanNulls: true
+    targets:
+      - expr: 'max by (fabric_id, hostname, peer, state) (netops_bgp_session_up{fabric_id=~"$fabric_id", hostname=~"$hostname"})'
+        legendFormat: "{{hostname}} <-> {{peer}} ({{state}})"
+        refId: A
+      - expr: 'max by (fabric_id, hostname, peer) (netops_bgp_prefixes_accepted{fabric_id=~"$fabric_id", hostname=~"$hostname"})'
+        legendFormat: "{{hostname}} Prefixes ({{peer}})"
+        refId: B
+
+  - id: 7
+    title: "Multi-Stand Inventory & Sync Status (PostgreSQL SoT)"
+    type: table
+    gridPos: { h: 8, w: 12, x: 12, y: 13 }
+    datasource: { type: postgres, uid: postgres-netops }
+    targets:
+      - rawQuery: true
+        editorMode: code
+        rawSql: "SELECT hostname, fabric_id, COALESCE(site, fabric_id) AS site, platform, role, status, management_ip, last_checked_at FROM devices WHERE fabric_id ~ '^(${fabric_id:regex})$' OR '${fabric_id:raw}' = '.*' ORDER BY fabric_id, hostname;"
+        format: table
+        refId: A
+
+  - id: 8
+    title: "Stand & Application Server CPU Utilization (%)"
+    type: timeseries
+    gridPos: { h: 8, w: 12, x: 0, y: 21 }
+    datasource: { type: prometheus, uid: victoriametrics }
+    fieldConfig:
+      defaults:
+        unit: percent
+        min: 0
+        max: 100
+        color: { mode: palette-classic }
+        custom:
+          drawStyle: line
+          lineInterpolation: smooth
+          lineWidth: 2
+          fillOpacity: 20
+          gradientMode: opacity
+          showPoints: never
+          spanNulls: true
+    targets:
+      - expr: 'max by (fabric_id, hostname) (netops_server_cpu_utilization_percent{fabric_id=~"$fabric_id", hostname=~"$hostname"} or (100 * (1 - avg by (hostname) (rate(node_cpu_seconds_total{mode="idle"}[2m])))))'
+        legendFormat: "{{hostname}} Server CPU"
+        refId: A
+
+  - id: 9
+    title: "Stand Server Memory & Disk Utilization (%)"
+    type: timeseries
+    gridPos: { h: 8, w: 12, x: 12, y: 21 }
+    datasource: { type: prometheus, uid: victoriametrics }
+    fieldConfig:
+      defaults:
+        unit: percent
+        min: 0
+        max: 100
+        color: { mode: palette-classic }
+        custom:
+          drawStyle: line
+          lineInterpolation: smooth
+          lineWidth: 2
+          fillOpacity: 16
+          gradientMode: opacity
+          showPoints: never
+          spanNulls: true
+    targets:
+      - expr: 'max by (fabric_id, hostname) (netops_server_memory_utilization_percent{fabric_id=~"$fabric_id", hostname=~"$hostname"} or (100 * (1 - (node_memory_MemAvailable_bytes / clamp_min(node_memory_MemTotal_bytes, 1)))))'
+        legendFormat: "{{hostname}} Server RAM"
+        refId: A
+      - expr: 'max by (fabric_id, hostname) (netops_server_disk_utilization_percent{fabric_id=~"$fabric_id", hostname=~"$hostname"} or (100 * (1 - (node_filesystem_avail_bytes{mountpoint="/"} / clamp_min(node_filesystem_size_bytes{mountpoint="/"}, 1)))))'
+        legendFormat: "{{hostname}} Server Disk"
+        refId: B
+
+  - id: 10
+    title: "Stand Server Network Rate & Load Average"
+    type: timeseries
+    gridPos: { h: 8, w: 24, x: 0, y: 29 }
+    datasource: { type: prometheus, uid: victoriametrics }
+    fieldConfig:
+      defaults:
+        color: { mode: palette-classic }
+        custom:
+          drawStyle: line
+          lineInterpolation: smooth
+          lineWidth: 2
+          fillOpacity: 16
+          gradientMode: opacity
+          showPoints: never
+          spanNulls: true
+    targets:
+      - expr: 'max by (fabric_id, hostname) (netops_server_network_rate_mbps{fabric_id=~"$fabric_id", hostname=~"$hostname"} or (sum by (hostname) (rate(node_network_receive_bytes_total{device!="lo"}[2m]) + rate(node_network_transmit_bytes_total{device!="lo"}[2m])) * 8 / 1000000))'
+        legendFormat: "{{hostname}} Net Rate (Mbps)"
+        refId: A
+      - expr: 'max by (fabric_id, hostname) (netops_server_load_1m{fabric_id=~"$fabric_id", hostname=~"$hostname"} or node_load1)'
+        legendFormat: "{{hostname}} Load 1m"
+        refId: B

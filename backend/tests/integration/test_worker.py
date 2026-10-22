@@ -44,7 +44,11 @@ def runtime(
 def test_beat_schedule_follows_settings(settings: Settings) -> None:
     app = create_celery_app(settings.model_copy(update={"drift_scan_interval_seconds": 900}))
     schedule = app.conf.beat_schedule
-    assert schedule["drift-scan"] == {"task": SCHEDULED_DRIFT_SCAN_TASK, "schedule": 900.0}
+    assert schedule["drift-scan"] == {
+        "task": "netops.drift.dispatch",
+        "schedule": 900.0,
+        "options": {"expires": 900.0},
+    }
     assert schedule["fail-stale-jobs"]["task"] == FAIL_STALE_JOBS_TASK
     assert app.conf.task_acks_late is True
     assert app.conf.worker_prefetch_multiplier == 1

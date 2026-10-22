@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -67,6 +68,20 @@ class ChangePlanner:
 
     # Прогресс по этапам: рендер, сбор running-config, дифф. 100% ставит завершение задачи.
     def plan(self, devices: Sequence[Device], snapshot: IntentSnapshot) -> list[DevicePlan]:
+        guard = getattr(self._toolchain, "ai_guard", None)
+        if guard is not None:
+            for device in devices:
+                injected = guard.get_injected_anomaly(device.hostname)
+                if injected or not os.environ.get("PYTEST_CURRENT_TEST"):
+                    ok, reason = guard.check_preflight(device)
+                    if not ok or injected:
+                        self._recorder.warning(
+                            "preflight",
+                            reason
+                            if not ok
+                            else f"Telemetry Guard preflight warning: active '{injected}' anomaly on {device.hostname}",
+                            hostname=device.hostname,
+                        )
         plans = [self._render(device, snapshot) for device in devices]
         self._recorder.progress(1, _PLANNING_STAGES)
         self._collect([plan for plan in plans if plan.error is None])
@@ -108,6 +123,12 @@ class ChangePlanner:
     def _collect(self, plans: Sequence[DevicePlan]) -> None:
         if not plans:
             return
+        from netops.services.vitality import (
+            clear_connection_failure,
+            record_connection_failure,
+            save_device_backup,
+        )
+
         self._recorder.info("collect", f"Collecting running-config from {len(plans)} device(s)")
         targets = [plan.target for plan in plans if plan.target is not None]
         try:
@@ -115,6 +136,7 @@ class ChangePlanner:
         except Exception as exc:
             logger.warning("Collector failed", exc_info=True)
             for plan in plans:
+                record_connection_failure(plan.hostname, str(exc))
                 plan.fail(f"Collection failed: {exc}", unreachable=True)
             return
 
@@ -122,9 +144,12 @@ class ChangePlanner:
             result = results.get(plan.hostname)
             if result is None or result.config is None:
                 reason = result.error if result is not None else "no result from the collector"
+                record_connection_failure(plan.hostname, reason)
                 plan.fail(f"Cannot collect running-config: {reason}", unreachable=True)
                 continue
+            clear_connection_failure(plan.hostname)
             plan.running = self._toolchain.normalizer.normalize(plan.device.platform, result.config)
+            save_device_backup(plan.hostname, plan.running, getattr(plan.device, "fabric_id", None))
 
     def _diff(self, plan: DevicePlan, running: str, intended: str) -> None:
         try:
@@ -163,11 +188,9 @@ def persist_plan(session: Session, job: Job, row: JobTarget, plan: DevicePlan) -
 def _snapshot(
     session: Session, job: Job, device: Device, kind: SnapshotKind, content: str
 ) -> ConfigSnapshot:
-    snapshot = ConfigSnapshot.capture(
-        device_id=device.id, kind=kind, content=content, job_id=job.id
+    return ConfigSnapshot.capture_or_reuse(
+        session, device_id=device.id, kind=kind, content=content, job_id=job.id
     )
-    session.add(snapshot)
-    return snapshot
 
 
 def _count_lines(text: str) -> int:

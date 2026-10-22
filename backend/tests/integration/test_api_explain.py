@@ -58,3 +58,28 @@ def test_explain_job_diff_endpoint(
     assert len(data["key_points"]) > 0
     assert "summary" in data
     assert "recommendations" in data
+
+
+def test_stream_job_logs_endpoint(
+    client: TestClient,
+    session: Session,
+    devices: list[Device],
+) -> None:
+    job = Job(
+        type=JobType.DRY_RUN,
+        status=JobStatus.SUCCESS,
+        progress=100,
+        created_by=SCHEDULER_USER,
+    )
+    session.add(job)
+    session.commit()
+
+    # 1. Unauthenticated -> 401
+    res_unauth = client.get(f"/api/v1/jobs/{job.id}/stream")
+    assert res_unauth.status_code == 401
+
+    # 2. Authenticated Viewer -> 200 text/event-stream
+    res = client.get(f"/api/v1/jobs/{job.id}/stream", headers=auth(UserRole.VIEWER))
+    assert res.status_code == 200
+    assert "text/event-stream" in res.headers["content-type"]
+    assert "event: done" in res.text

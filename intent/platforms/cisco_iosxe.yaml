@@ -1,6 +1,9 @@
+# ==============================================================================
+# БЛОК 1: ИДЕНТИФИКАЦИЯ СТЕНДА И ВЕНДОРА (TCP / SSH / CLI ТРИГГЕРЫ)
+# ==============================================================================
 platform: cisco_iosxe
 vendor: Cisco Systems
-default_password: admin
+default_password: F5ga6jfkig1
 default_interface: GigabitEthernet2
 offline_ports: [2211]
 offline_interfaces:
@@ -10,6 +13,10 @@ ssh_banners:
   - cisco
 version_signatures:
   - Cisco IOS
+
+# ==============================================================================
+# БЛОК 2: ИНСПЕКЦИЯ ТОПОЛОГИИ И КОНФИГУРАЦИИ (DISCOVERY & DRIFT ENGINE)
+# ==============================================================================
 interface_prefixes:
   - Gigabit
   - Loop
@@ -17,13 +24,62 @@ interface_prefixes:
 lldp_port_prefixes:
   - Gi
   - eth
+render_order:
+  - base
+  - interfaces
+  - bgp
+  - acls
 commands:
   version: show version
   memory: show processes memory | include Processor Pool
+  cpu: show processes cpu | include CPU utilization
   running_config: show running-config
   hostname_filter: show running-config | include hostname
   interfaces_brief: show ip interface brief
   lldp_neighbors: show lldp neighbors
+  bgp_summary: show ip bgp summary
+
+# ==============================================================================
+# БЛОК 3: ТРИГГЕРЫ ПРОТОКОЛОВ ТЕЛЕМЕТРИИ И КАСКАД ПРИОРИТЕТОВ (CAPABILITIES)
+# ==============================================================================
+gnmi:
+  default_port: 9339
+  check_command: show gnmi
+  match_tokens:
+    - enabled
+    - active
+    - running
+    - "9339"
+    - grpc
+snmp:
+  base_port: 161
+  clab_offset: -600
+  hardware_module: cisco_cpu
+exporter:
+  port: 9100
+  path: /metrics
+protocol_priority:
+  - gnmi
+  - snmp
+  - ssh_cli
+
+# ==============================================================================
+# БЛОК 4: КАСТОМНЫЙ SSH CLI СБОРЩИК МЕТРИК (POOLED SSH FALLBACK ENGINE)
+# ==============================================================================
+telemetry:
+  cpu_pct:
+    command: show processes cpu | include CPU utilization
+    parser: parse_cisco_cpu
+  memory_pct:
+    command: show processes memory | include Processor Pool
+    parser: parse_cisco_memory
+  uplink_util_pct:
+    command: show interfaces | include rate
+    parser: max_cisco_link_utilization
+
+# ==============================================================================
+# БЛОК 5: АВАРИЙНОЕ УПРАВЛЕНИЕ (EMERGENCY HUB)
+# ==============================================================================
 emergency_commands:
   reset_bgp_sessions: clear ip bgp *
   rollback_last_commit: configure replace flash:rollback-0 force
