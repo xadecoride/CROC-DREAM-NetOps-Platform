@@ -1,46 +1,63 @@
 # CROC DREAM NetOps Platform — весь стек одной командой:
 #
-#   docker compose up --build
+#   docker compose up -d --build
 #
-# API и Swagger: http://localhost:8000/docs
-# Настройки бэкенда (токены, SSH-профили) — в backend/.env, пример в backend/.env.example.
-# Порты и каталоги с данными переопределяются переменными ниже (например, в ./.env).
+# Веб-консоль Owner (5173):    http://localhost:5173
+# Веб-консоль Admin (5174):    http://localhost:5174
+# Веб-консоль Operator (5175): http://localhost:5175
+# Веб-консоль Jury (5176):     http://localhost:5176
+# API и Swagger:               http://localhost:8001/docs
+# Grafana Dashboards:          http://localhost:3000
+# Prometheus UI:               http://localhost:9090/targets
+# VictoriaMetrics (история):   http://localhost:8428/vmui
 name: netops
 
 x-backend: &backend
-  build: ./backend
   image: netops-backend
+  pull_policy: never
   env_file:
     - path: backend/.env
       required: false
   environment:
     NETOPS_DATABASE_URL: postgresql+psycopg://netops:netops@postgres:5432/netops
     NETOPS_REDIS_URL: redis://redis:6379/0
+    NETOPS_CONSTANTS_PATH: /data/config/constants.yaml
     NETOPS_INTENT_REPO_PATH: /data/intent
     NETOPS_TEMPLATES_PATH: /data/templates
     NETOPS_OFFLINE_LAB_PATH: /data/lab
+    NETOPS_PROMETHEUS_URL: ${NETOPS_PROMETHEUS_URL:-http://prometheus:9090}
+    NETOPS_VICTORIAMETRICS_URL: ${NETOPS_VICTORIAMETRICS_URL:-http://victoriametrics:8428}
+    NETOPS_SNMP_COMMUNITY: ${SNMP_COMMUNITY:-}
+    GIT_DISCOVERY_ACROSS_FILESYSTEM: "1"
+    # NETOPS_API_TOKENS is intentionally NOT set here: no well-known dev tokens in the stack.
+    # Machine API keys (MCP, CI, smoke) go into backend/.env; browsers use HttpOnly cookie sessions.
   volumes:
-    - ${INTENT_REPO:-./intent}:/data/intent:ro
+    - ./.git:/data/.git
+    - ${INTENT_REPO:-./intent}:/data/intent
     - ${TEMPLATES:-./templates}:/data/templates:ro
     - ${OFFLINE_LAB:-./lab/running}:/data/lab
+    - ./lab:/app/lab
+    - ./monitoring:/data/monitoring:ro
+    - ./config:/data/config:ro
+    - ${HOME:-/root}/.ssh:/home/netops/.ssh:ro
   restart: unless-stopped
-  # Воркер и Beat стартуют, когда API healthy: база доступна и миграции применены.
   depends_on:
     api:
       condition: service_healthy
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: mirror.gcr.io/library/postgres:17-alpine
     environment:
       POSTGRES_USER: netops
       POSTGRES_PASSWORD: netops
       POSTGRES_DB: netops
-    ports: ["${POSTGRES_PORT:-5432}:5432"]
+      PGDATA: /var/lib/postgresql/data/pg17
+    command: ["postgres", "-c", "max_connections=300"]
+    ports: ["${POSTGRES_PORT:-5433}:5432"]
     volumes: [postgres-data:/var/lib/postgresql/data]
     restart: unless-stopped
     healthcheck:
-      # Проверка по TCP: при первом старте временный сервер слушает только сокет.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U netops -d netops"]
       interval: 5s
       timeout: 5s
@@ -48,19 +65,22 @@ services:
       start_period: 30s
 
   redis:
-    image: redis:7-alpine
+    image: mirror.gcr.io/library/redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
     ports: ["${REDIS_PORT:-6379}:6379"]
+    volumes: [redis-data:/data]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       retries: 10
 
-  # При старте API применяет миграции, затем запускает сервер.
   api:
     <<: *backend
-    command: sh -c "alembic upgrade head && exec uvicorn netops.main:app --host 0.0.0.0 --port 8000"
-    ports: ["${API_PORT:-8000}:8000"]
+    build: ./backend
+    command: sh -c "alembic upgrade head && exec uvicorn netops.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"
+    ports:
+      - "${API_PORT:-8001}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,53 +92,114 @@ services:
       retries: 5
       start_period: 60s
 
-  worker:
+  # Изоляция очередей: деплои/дрифт-ремедиация не ждут телеметрию и фоновые задачи. Порты наружу не пробрасываются.
+  worker-critical:
     <<: *backend
-    command: celery -A netops.worker.tasks worker --loglevel=INFO --concurrency=4
+    command: celery -A netops.worker.tasks worker --loglevel=INFO --concurrency=${WORKER_CRITICAL_CONCURRENCY:-4} -n critical@%h -Q critical,default
+
+  worker-telemetry:
+    <<: *backend
+    command: celery -A netops.worker.tasks worker --loglevel=INFO --concurrency=${WORKER_TELEMETRY_CONCURRENCY:-4} -n telemetry@%h -Q telemetry,background
 
   beat:
     <<: *backend
     command: celery -A netops.worker.tasks beat --loglevel=INFO --schedule=/tmp/celerybeat-schedule
 
-  # Бот оповещает о дрейфе и упавших задачах и отвечает на команды (/status, /drift).
-  # Без NETOPS_TELEGRAM_BOT_TOKEN и NETOPS_TELEGRAM_CHAT_IDS просто простаивает.
   telegram-bot:
     <<: *backend
     command: python -m netops.telemetry.bot
 
-  # На машине со стендом поднимать с оверлеем: docker compose -f docker-compose.yml \
-  #   -f docker-compose.lab.yml up -d — он подключает экспортёр к сети Containerlab.
+  node-exporter:
+    image: mirror.gcr.io/prom/node-exporter:v1.12.1
+    ports: ["${NODE_EXPORTER_PORT:-19100}:9100"]
+    restart: unless-stopped
+
   snmp-exporter:
-    image: prom/snmp-exporter:v0.26.0
+    image: mirror.gcr.io/prom/snmp-exporter:v0.30.1
     ports: ["${SNMP_EXPORTER_PORT:-9116}:9116"]
     volumes:
       - ./monitoring/snmp.yml:/etc/snmp_exporter/snmp.yml:ro
     restart: unless-stopped
+
+  # gNMI-поток с устройств, которые платформа проверила через gRPC Capabilities.
+  gnmic:
+    image: ghcr.io/openconfig/gnmic:0.49.0
+    command: ["--config", "/etc/gnmic/gnmic.yaml", "subscribe"]
+    environment:
+      GNMIC_USERNAME: ${GNMIC_USERNAME:-admin}
+      GNMIC_PASSWORD: ${GNMIC_PASSWORD:-admin}
+    ports: ["${GNMIC_PORT:-9804}:9804"]
+    volumes:
+      - ./monitoring/gnmic/gnmic.yaml:/etc/gnmic/gnmic.yaml:ro
+      - ${OFFLINE_LAB:-./lab/running}:/data/lab:ro
+    restart: unless-stopped
+
+  # Долговременное хранилище рядов (Prometheus пишет сюда через remote_write).
+  victoriametrics:
+    image: mirror.gcr.io/victoriametrics/victoria-metrics:v1.154.1
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=${VM_RETENTION:-12}
+      - -httpListenAddr=:8428
+      - -search.maxQueryLen=65536
+    ports:
+      - "${VM_PORT:-8428}:8428"
+    volumes: [vm-data:/storage]
+    restart: unless-stopped
+
   prometheus:
-    image: prom/prometheus:v3.15.0
+    image: mirror.gcr.io/prom/prometheus:v3.15.0
     command:
       - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=15d
-    ports: ["${PROMETHEUS_PORT:-9090}:9090"]
+      - --storage.tsdb.retention.time=3d
+      - --web.enable-lifecycle
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
-      - prometheus-data:/prometheus
       - ./monitoring:/etc/prometheus:ro
+      - prometheus-data:/prometheus
     restart: unless-stopped
     depends_on:
       - snmp-exporter
+      - node-exporter
+      - gnmic
+      - victoriametrics
 
-  # nginx отдаёт собранный интерфейс и проксирует /api на бэкенд.
+  grafana:
+    image: mirror.gcr.io/grafana/grafana:13.2.4
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_DATABASE_TYPE: sqlite3
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - victoriametrics
+      - postgres
+
   frontend:
     build: ./frontend
     image: netops-frontend
-    ports: ["${FRONTEND_PORT:-5173}:80"]
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+      - "${FRONTEND_ADMIN_PORT:-5174}:81"
+      - "${FRONTEND_OPERATOR_PORT:-5175}:82"
+      - "${FRONTEND_VIEWER_PORT:-5176}:83"
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
 
-  # Сюда добавится Grafana поверх Prometheus.
-
 volumes:
+  redis-data:
   postgres-data:
   prometheus-data:
+  vm-data:
+  grafana-data:

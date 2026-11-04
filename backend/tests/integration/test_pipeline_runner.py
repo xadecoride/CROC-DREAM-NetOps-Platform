@@ -75,6 +75,7 @@ def test_device_without_intent(job_service: JobService, run_job: RunJob, session
         platform="cisco_iosxe",
         role="border",
         auth_profile="lab",
+        management_mode="MANAGED",
     )
     session.add(device)
     session.commit()

@@ -24,6 +24,7 @@ from netops.db import Base, build_engine, build_session_factory
 from netops.intent.repository import IntentRepository
 from netops.network.rendering import JinjaConfigRenderer
 from netops.services import DeviceService
+from netops.settings import get_settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("reset_lab")
@@ -38,29 +39,43 @@ def reset_environment(seed: bool = False) -> None:
     print("      CROC DREAM NetOps Platform — Lab Environment Reset Tool     ")
     print("=================================================================")
 
-    # 1. Reset SQLite Database
+    # 1. Reset SQLite Database (if present) and PostgreSQL Database
     if db_file.exists():
-        logger.info("Удаление существующей локальной базы: %s", db_file.name)
+        logger.info("Удаление существующей локальной базы SQLite: %s", db_file.name)
         try:
             db_file.unlink()
         except Exception as e:
-            logger.warning("Не удалось удалить файл БД напрямую (%s), очищаем через drop_all", e)
+            logger.warning("Не удалось удалить файл БД напрямую (%s)", e)
 
-    engine = build_engine(f"sqlite:///{db_file}")
-    logger.info("Инициализация чистой схемы БД (Alembic Base.metadata)...")
-    Base.metadata.create_all(engine)
-    session_factory = build_session_factory(engine)
+    settings = get_settings()
+    target_urls = [f"sqlite:///{db_file}"]
+    if "postgresql" in settings.database_url:
+        target_urls.append(settings.database_url)
 
-    # 2. Reset Chaos Events & Emergency Audit Logs
-    chaos_file = lab_dir / "chaos_events.json"
-    if chaos_file.exists():
-        logger.info("Очистка chaos_events.json...")
-        chaos_file.write_text("[]\n", encoding="utf-8")
+    if getattr(settings, "environment", "").lower() in ("production", "prod", "staging"):
+        raise RuntimeError(f"Сброс базы данных запрещен в окружении {settings.environment}")
 
-    audit_file = lab_dir / "emergency_audit.jsonl"
-    if audit_file.exists():
-        logger.info("Очистка emergency_audit.jsonl...")
-        audit_file.write_text("", encoding="utf-8")
+    session_factory = None
+    for url in dict.fromkeys(target_urls):
+        try:
+            engine = build_engine(url)
+            logger.info("Очистка и пересоздание схемы БД: %s", url)
+            Base.metadata.drop_all(engine)
+            Base.metadata.create_all(engine)
+            if "postgresql" in url or session_factory is None:
+                session_factory = build_session_factory(engine)
+        except Exception as exc:
+            logger.warning("Пропуск БД %s: %s", url, exc)
+
+    # 2. Purge any legacy .json / .jsonl files (all state now resides in PostgreSQL system_state)
+    for directory in (lab_dir, BACKEND_DIR):
+        for pattern in ("*.json", "*.jsonl"):
+            for fpath in directory.glob(pattern):
+                try:
+                    fpath.unlink()
+                    logger.info("Удалён устаревший JSON-файл состояния: %s", fpath.name)
+                except Exception as exc:
+                    logger.warning("Не удалось удалить %s: %s", fpath.name, exc)
 
     # 3. Restore Clean Baseline Device Configs (admin / admin)
     intent_repo = IntentRepository(PROJECT_ROOT / "intent", inventory_file="inventory.yaml")
@@ -72,27 +87,25 @@ def reset_environment(seed: bool = False) -> None:
             intent = snapshot.intent_for(dev.hostname)
             cfg = renderer.render(dev, intent)
             cfg_file.write_text(cfg, encoding="utf-8")
-            logger.info("  [OK] Vosstanovlen baseline config: %s", cfg_file.name)
+            logger.info("  [OK] Восстановлен baseline config: %s", cfg_file.name)
 
         # 4. Optional Pre-seeding
-        if seed:
-            logger.info("Flag --seed active: import 6 devices into SQLite inventory...")
+        if seed and session_factory is not None:
+            logger.info("Flag --seed active: import devices into inventory...")
             with session_factory() as session:
                 svc = DeviceService(session)
                 res = svc.sync_inventory(snapshot.inventory)
                 logger.info("Imported devices: %s", len(res.created))
         else:
-            logger.info("Clean start (Empty-State): database is empty, ready for first structure onboarding.")
+            logger.info("Clean start (Zero-State): database is empty, ready for Matryoshka Wizard onboarding.")
 
     except Exception as exc:
         logger.error("Error generating configs: %s", exc)
 
     print("=================================================================")
-    print("  [OK] Sbros okruzheniya uspeshno zavershen!")
-    print(f"  [OK] Database: {db_file} (clean schema)")
-    print("  [OK] Default credentials: admin / admin")
-    print(f"  [OK] Configs in {lab_dir} synchronized with baseline.")
+    print("  [OK] Сброс окружения (PostgreSQL + SQLite, без JSON) завершён!")
     print("=================================================================")
+
 
 
 def main() -> None:

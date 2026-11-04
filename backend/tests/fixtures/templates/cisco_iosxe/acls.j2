@@ -1,19 +1,7 @@
-{% macro endpoint(value) %}{% if value is not defined or value == "any" or not value %}any{% else %}{{ value.network_address }} {{ value.hostmask }}{% endif %}{% endmacro %}
+{% macro endpoint(value) %}{% if value == "any" %}any{% else %}{{ value.network_address }} {{ value.hostmask }}{% endif %}{% endmacro %}
 {% for acl in intent.acls %}
 ip access-list extended {{ acl.name }}
-{% set rules_seq = acl.rules | map(attribute="sequence") | list %}
 {% for rule in acl.rules %}
-{% set src = endpoint(rule.source if rule.source is defined else 'any') %}
-{% set dst = endpoint(rule.destination if rule.destination is defined else 'any') %}
-{% if rule.src_port is defined and rule.src_port %}
- {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} {{ src }} eq {{ rule.src_port }} {{ dst }}
-{% elif rule.dst_port is defined and rule.dst_port %}
- {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} {{ src }} {{ dst }} eq {{ rule.dst_port }}
-{% else %}
- {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} {{ src }} {{ dst }}
-{% endif %}
-{% if rule.sequence == 10 and 15 not in rules_seq %}
- 15 permit ospf any any
-{% endif %}
+ {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} {{ endpoint(rule.source) }} {{ endpoint(rule.destination) }}
 {% endfor %}
 {% endfor %}

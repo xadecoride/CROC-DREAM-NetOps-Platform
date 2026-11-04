@@ -21,6 +21,7 @@ class DeviceTarget:
     host: str
     port: int
     credentials: Credentials = field(repr=False)
+    proxy_jump: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +89,16 @@ class HealthSnapshot:
     bgp_sessions: Mapping[str, BgpSessionState] = field(default_factory=dict)
     interfaces: Mapping[str, InterfaceState] = field(default_factory=dict)
     ping_loss_percent: Mapping[str, float] = field(default_factory=dict)
+    cpu_pct: float | None = None
+    memory_pct: float | None = None
+    uplink_util_pct: float | None = None
+    disk_util_pct: float | None = None
+    network_rate_mbps: float | None = None
+    load_1m: float | None = None
+    interface_errors_rate: float | None = None
+    fdb_mac_count: float | None = None
+    tcp_retransmits_rate: float | None = None
+    conntrack_usage_pct: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,13 +157,6 @@ class ConfigDeployer(Protocol):
 
 # show ip bgp summary, show ip interface brief и ping (5 пакетов) до expected.bgp_peers;
 # expected равен None, если intent неизвестен.
-# Выполнение команд только на чтение: нужно для ручной диагностики из интерфейса.
-# Реализуют живые драйверы; файловый стенд команды не выполняет.
-@runtime_checkable
-class CommandRunner(Protocol):
-    def run_read_only(self, target: DeviceTarget, command: str) -> str: ...
-
-
 @runtime_checkable
 class HealthProbe(Protocol):
     def snapshot(

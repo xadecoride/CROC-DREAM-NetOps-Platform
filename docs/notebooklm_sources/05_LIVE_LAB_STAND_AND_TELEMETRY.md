@@ -1,6 +1,6 @@
-# Живой лабораторный стенд CROC DREAM (5.228.243.54)
+# Живой лабораторный стенд CROC DREAM (198.51.100.10)
 
-> **Хост-сервер стенда**: `srv-5-228-243-54` (`5.228.243.54`)  
+> **Хост-сервер стенда**: `srv-5-228-243-54` (`198.51.100.10`)  
 > **SSH порт хоста**: `221` (пользователь: `crocdream`)  
 > **Containerlab топология**: `/home/crocdream/clab-quickstart/fabric.clab.yaml`  
 
@@ -19,12 +19,12 @@
 
 | Имя узла в Clab | Контейнер Docker | Модель / ОС | Внутренний IP clab_mgmt | Внешний SSH-порт | Логин / Пароль |
 |---|---|---|---|---|---|
-| **`spine1`** | `clab-dc-clos-cisco-arista-huawei-spine1` | Cisco Catalyst 8000v (IOS-XE 17.03.08a) | `172.20.20.6` | `5.228.243.54:2211` | `admin` / `F5ga6jfkig1` |
-| **`spine2`** | `clab-dc-clos-cisco-arista-huawei-spine2` | Arista cEOSLab (EOS 4.32.0F) | `172.20.20.4` | `5.228.243.54:2212` | `admin` / `admin` (or `F5ga6jfkig2`) |
-| **`leaf1`** | `clab-dc-clos-cisco-arista-huawei-leaf1` | Huawei CloudEngine 12800 (VRP 8.180) | `172.20.20.2` | `5.228.243.54:2221` | `admin` / `F5ga6jfkig` |
-| **`leaf2`** | `clab-dc-clos-cisco-arista-huawei-leaf2` | Huawei CloudEngine 12800 (VRP 8.180) | `172.20.20.3` | `5.228.243.54:2222` | `admin` / `F5ga6jfkig2` |
-| **`host-a`** | `clab-dc-clos-cisco-arista-huawei-host-a` | Alpine Linux (Client A: `10.10.11.10/24`) | `172.20.20.7` | `5.228.243.54:2231` | `root` / `root` |
-| **`host-b`** | `clab-dc-clos-cisco-arista-huawei-host-b` | Alpine Linux (Client B: `10.10.12.10/24`) | `172.20.20.8` | `5.228.243.54:2232` | `root` / `root` |
+| **`spine1`** | `clab-dc-clos-cisco-arista-huawei-spine1` | Cisco Catalyst 8000v (IOS-XE 17.03.08a) | `172.20.20.6` | `198.51.100.10:2211` | `admin` / `admin` |
+| **`spine2`** | `clab-dc-clos-cisco-arista-huawei-spine2` | Arista cEOSLab (EOS 4.32.0F) | `172.20.20.4` | `198.51.100.10:2212` | `admin` / `admin` (or `admin`) |
+| **`leaf1`** | `clab-dc-clos-cisco-arista-huawei-leaf1` | Huawei CloudEngine 12800 (VRP 8.180) | `172.20.20.2` | `198.51.100.10:2221` | `admin` / `admin` |
+| **`leaf2`** | `clab-dc-clos-cisco-arista-huawei-leaf2` | Huawei CloudEngine 12800 (VRP 8.180) | `172.20.20.3` | `198.51.100.10:2222` | `admin` / `admin` |
+| **`host-a`** | `clab-dc-clos-cisco-arista-huawei-host-a` | Alpine Linux (Client A: `10.10.11.10/24`) | `172.20.20.7` | `198.51.100.10:2231` | `root` / `root` |
+| **`host-b`** | `clab-dc-clos-cisco-arista-huawei-host-b` | Alpine Linux (Client B: `10.10.12.10/24`) | `172.20.20.8` | `198.51.100.10:2232` | `root` / `root` |
 
 ---
 

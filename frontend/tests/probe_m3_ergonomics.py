@@ -127,7 +127,7 @@ def run_probe():
         copilot_input = page.locator('aside input[type="text"], aside input')
         copilot_input.fill("Запусти префлайт dry-run для leaf-1")
         copilot_input.press("Enter")
-
+        
         # Wait for Copilot response to arrive and render action button
         action_btn = page.locator('aside button[title^="Выполнить:"]').first
         action_btn.wait_for(state="visible", timeout=15000)
@@ -265,8 +265,8 @@ def run_probe():
                 try:
                     payload = json.loads(request.post_data)
                     captured_requests.append(payload)
-                except Exception:
-                    pass
+                except (TypeError, ValueError) as exc:
+                    print(f"      [WARN] Failed to parse copilot chat post_data ({exc!r}): {request.post_data!r}")
             route.continue_()
 
         page.route("**/api/v1/copilot/chat", handle_route)
@@ -320,7 +320,7 @@ def run_probe():
         input_box = page.locator('aside input[type="text"], aside input')
         input_box.fill("Запустить проверку готовности к деплою")
         input_box.press("Enter")
-
+        
         # Wait for action button to appear in AI response
         action_btn = page.locator('aside button[title^="Выполнить:"]').last
         action_btn.wait_for(state="visible", timeout=15000)

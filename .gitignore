@@ -32,3 +32,37 @@ frontend/.cache/
 .DS_Store
 .idea/
 .vscode/
+
+# Agent scratch / teamwork
+.agents/
+screenshot_*.png
+test.png
+*.log
+*telemetry_cache.json
+backend/lab/
+*access_registry.json
+*telegram_bindings.json
+*telegram_subscribers.json
+*user_tokens.json
+*custom_auth_profiles.json
+*runtime_settings.json
+lab/running/emergency_audit.jsonl
+lab/running/freeze_state.json
+lab/running/gnmic_targets.yaml
+lab/running/*.json
+lab/running/*.jsonl
+intent/*.lock
+intent/inventory.live.yaml
+intent/diffs/*.cfg
+backend/.env*
+!backend/.env.example
+
+# Containerlab runtime artifacts and binary dumps
+lab/clab-*/
+lab/clab-croc-hybrid-fabric/
+lab/clab-dc-clos-cisco-arista-huawei/
+*.log.gz
+.checkpoints/
+persist/
+.codebase-memory/
+intent/**/*.lock

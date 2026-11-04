@@ -1,6 +1,5 @@
 {% for acl in intent.acls %}
 ip access-list {{ acl.name }}
-{% set rules_seq = acl.rules | map(attribute="sequence") | list %}
 {% for rule in acl.rules %}
 {% set src = rule.source if rule.source is defined else 'any' %}
 {% set dst = rule.destination if rule.destination is defined else 'any' %}
@@ -10,9 +9,6 @@ ip access-list {{ acl.name }}
    {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} {{ src }} {{ dst }} eq {{ rule.dst_port }}
 {% else %}
    {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} {{ src }} {{ dst }}
-{% endif %}
-{% if rule.sequence == 10 and 15 not in rules_seq %}
-   15 permit ospf any any
 {% endif %}
 {% endfor %}
 {% endfor %}

@@ -22,10 +22,14 @@ from netops.services import DeviceService, JobService
 from netops.settings import Settings
 from netops.toolchain import Toolchain, build_toolchain
 
+Settings.model_config["env_file"] = None
+Settings.model_rebuild(force=True)
+
 FIXTURES = Path(__file__).parent / "fixtures"
 TEMPLATES = FIXTURES / "templates"
 
 TOKENS = {
+    UserRole.OWNER: "owner-token",
     UserRole.ADMIN: "admin-token",
     UserRole.OPERATOR: "operator-token",
     UserRole.VIEWER: "viewer-token",
@@ -62,13 +66,32 @@ class RecordingDispatcher:
         self.job_ids.append(job_id)
 
 
+@pytest.fixture(autouse=True)
+def _reset_shared_state() -> Iterator[None]:
+    from netops.services.ai_guard import _active_injections
+    from netops.services.state import reset_state_manager
+    from netops.settings import get_settings
+
+    get_settings.cache_clear()
+    _active_injections.clear()
+    reset_state_manager()
+    yield
+    get_settings.cache_clear()
+    _active_injections.clear()
+    reset_state_manager()
+
+
 def auth(role: UserRole) -> dict[str, str]:
     return {"Authorization": f"Bearer {TOKENS[role]}"}
 
 
 @pytest.fixture
 def intent_repo(tmp_path: Path) -> Path:
-    return Path(shutil.copytree(FIXTURES / "intent-repo", tmp_path / "intent"))
+    dst = Path(shutil.copytree(FIXTURES / "intent-repo", tmp_path / "intent"))
+    repo_platforms = Path(__file__).resolve().parents[2] / "intent" / "platforms"
+    if repo_platforms.is_dir():
+        shutil.copytree(repo_platforms, dst / "platforms", dirs_exist_ok=True)
+    return dst
 
 
 @pytest.fixture

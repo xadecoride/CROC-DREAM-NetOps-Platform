@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any
 
@@ -17,6 +18,11 @@ def build_engine(database_url: str, **kwargs: Any) -> Engine:
         engine = create_engine(database_url, **kwargs)
         event.listen(engine, "connect", _enable_sqlite_foreign_keys)
         return engine
+    # Пул на процесс; общий лимит = процессы * (pool_size + max_overflow) < max_connections PG.
+    kwargs.setdefault("pool_size", int(os.environ.get("NETOPS_DB_POOL_SIZE", "10")))
+    kwargs.setdefault("max_overflow", int(os.environ.get("NETOPS_DB_MAX_OVERFLOW", "10")))
+    kwargs.setdefault("pool_recycle", 1800)
+    kwargs.setdefault("pool_timeout", 30)
     return create_engine(database_url, pool_pre_ping=True, **kwargs)
 
 

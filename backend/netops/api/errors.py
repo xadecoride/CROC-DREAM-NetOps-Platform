@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from netops.errors import ConflictError, NetOpsError, NotFoundError, ServiceUnavailableError
 from netops.intent import IntentValidationError
 from netops.schemas.intent import IntentIssueRead
+
+_logger = logging.getLogger("netops.api.errors")
 
 _STATUS_CODES: tuple[tuple[type[NetOpsError], int], ...] = (
     (NotFoundError, status.HTTP_404_NOT_FOUND),
@@ -28,5 +34,16 @@ async def _handle_domain_error(_: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=code, content=content)
 
 
+async def _handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    _logger.error(
+        "422 Validation error on %s %s: errors=%s", request.method, request.url, exc.errors()
+    )
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": jsonable_encoder(exc.errors())},
+    )
+
+
 def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(NetOpsError, _handle_domain_error)
+    app.add_exception_handler(RequestValidationError, _handle_validation_error)

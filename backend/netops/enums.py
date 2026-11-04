@@ -7,20 +7,19 @@ class Platform(StrEnum):
     CISCO_IOSXE = "cisco_iosxe"
     ARISTA_EOS = "arista_eos"
     HUAWEI_VRP = "huawei_vrp"
+    JUNIPER_JUNOS = "juniper_junos"
     ELTEX_ESR = "eltex_esr"
-
-
-# Новое устройство добавляется как MONITORING_ONLY: дрейф считаем, но менять конфиг нельзя,
-# пока админ не переведёт его в MANAGED.
-class ManagementMode(StrEnum):
-    MONITORING_ONLY = "MONITORING_ONLY"
-    MANAGED = "MANAGED"
+    ELTEX_MES = "eltex_mes"
+    YADRO_KORNFE = "yadro_kornfe"
+    LINUX_SERVER = "linux_server"
 
 
 class DeviceRole(StrEnum):
     SPINE = "spine"
     LEAF = "leaf"
     BORDER = "border"
+    BORDER_FIREWALL = "border_firewall"
+    SERVER = "server"
 
 
 class DeviceStatus(StrEnum):
@@ -92,6 +91,7 @@ class UserRole(StrEnum):
     VIEWER = "viewer"
     OPERATOR = "operator"
     ADMIN = "admin"
+    OWNER = "owner"
 
     @property
     def rank(self) -> int:
@@ -101,4 +101,13 @@ class UserRole(StrEnum):
         return self.rank >= required.rank
 
 
-_ROLE_RANK = {UserRole.VIEWER: 0, UserRole.OPERATOR: 1, UserRole.ADMIN: 2}
+_ROLE_RANK = {UserRole.VIEWER: 0, UserRole.OPERATOR: 1, UserRole.ADMIN: 2, UserRole.OWNER: 3}
+
+
+class TelemetryProtocol(StrEnum):
+    GNMI = "gnmi"
+    PROMETHEUS_EXPORTER = "node_exporter"
+    NODE_EXPORTER = "node_exporter"
+    SNMP = "snmp"
+    SSH_CLI = "ssh_cli"
+

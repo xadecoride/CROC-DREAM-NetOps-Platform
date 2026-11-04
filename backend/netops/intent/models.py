@@ -31,10 +31,22 @@ InterfaceName = Annotated[
     StringConstraints(min_length=1, max_length=64, pattern=r"^[A-Za-z][\w./:\-]*(?: [\w./:\-]+)?$"),
 ]
 Description = Annotated[str, StringConstraints(max_length=240, strip_whitespace=True)]
+PortNumber = Annotated[int, Field(ge=1, le=65535, description="TCP/UDP port number (1-65535)")]
 
 
 class IntentModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key in type(self).model_fields:
+            val = getattr(self, key)
+            return default if val is None else val
+        return default
+
+    def __getitem__(self, key: str) -> Any:
+        if key in type(self).model_fields:
+            return getattr(self, key)
+        raise KeyError(key) from None
 
 
 class InterfaceMode(StrEnum):
@@ -53,6 +65,8 @@ class InterfaceIntent(IntentModel):
     mtu: int = Field(default=1500, ge=68, le=9216)
     # Входящий ACL на интерфейсе: имя из блока acls этого же устройства.
     acl_in: Identifier | None = None
+    access_vlan: int | None = Field(default=None, ge=1, le=4094)
+    ospf_area: str | int | None = None
 
     @field_validator("ipv4_address", mode="before")
     @classmethod
@@ -104,6 +118,8 @@ class BgpIntent(IntentModel):
     asn: Asn
     router_id: IPv4Address
     neighbors: list[BgpNeighborIntent] = Field(default_factory=list)
+    evpn: bool = False
+    vxlan_vni: int | None = Field(default=None, ge=1, le=16777215)
 
     @field_validator("router_id")
     @classmethod
@@ -129,6 +145,7 @@ class AclProtocol(StrEnum):
     TCP = "tcp"
     UDP = "udp"
     ICMP = "icmp"
+    OSPF = "ospf"
 
 
 def _parse_acl_endpoint(value: object) -> Literal["any"] | IPv4Network:
@@ -223,6 +240,16 @@ class DeviceIntent(IntentModel):
         return self
 
 
+def normalize_stand_dict(data: Any) -> Any:
+    if isinstance(data, dict):
+        data = dict(data)
+        if data.get("site") and not data.get("fabric_id"):
+            data["fabric_id"] = data["site"]
+        elif data.get("fabric_id") and not data.get("site"):
+            data["site"] = data["fabric_id"]
+    return data
+
+
 # id и status есть в модели устройства из ТЗ. Статус в файле справочный: в базе его
 # выставляет Drift Engine.
 class InventoryDevice(IntentModel):
@@ -231,11 +258,17 @@ class InventoryDevice(IntentModel):
     id: int | str | None = None
     hostname: Hostname
     management_ip: IPv4Address
-    management_port: int = Field(default=22, ge=1, le=65535)
+    management_port: PortNumber = 22
     platform: Platform
     role: DeviceRole
     auth_profile: Identifier
     status: DeviceStatus | None = None
+    fabric_id: str = "croc-dc1-pod1"
+    site: str | None = None
+    rack: str | None = None
+    unit: int | None = Field(default=None, ge=1, le=60)
+
+    _normalize_stand = model_validator(mode="before")(normalize_stand_dict)
 
 
 class Inventory(IntentModel):
@@ -275,3 +308,96 @@ def _ensure_unique(values: Iterable[str], error_type: str, subject: str) -> None
                 {"subject": subject, "value": value},
             )
         seen.add(value)
+
+
+# --- Declarative Platform Profiles & Diff Filters (R2) ---
+
+
+class TelemetryMetricSpec(IntentModel):
+    command: str
+    parser: str
+
+
+class GnmiSpec(IntentModel):
+    default_port: PortNumber
+    check_command: str
+    match_tokens: list[str] = Field(default_factory=list)
+
+
+class SnmpSpec(IntentModel):
+    base_port: PortNumber = 161
+    clab_offset: int = 0
+    hardware_module: str = "host_resources"
+
+
+class ExporterSpec(IntentModel):
+    port: PortNumber = 9100
+    path: str = "/metrics"
+
+
+class PlatformProfile(IntentModel):
+    platform: Platform | str
+    vendor: str = Field(min_length=1)
+    default_password: str = ""
+    default_interface: str = Field(min_length=1)
+    offline_ports: list[PortNumber] = Field(default_factory=list)
+    offline_interfaces: list[str] = Field(default_factory=list)
+    ssh_banners: list[str] = Field(default_factory=list)
+    version_signatures: list[str] = Field(default_factory=list)
+    interface_prefixes: list[str] = Field(default_factory=list)
+    lldp_port_prefixes: list[str] = Field(default_factory=list)
+    commands: dict[str, str] = Field(default_factory=dict)
+    render_order: list[str] = Field(default_factory=list)
+    telemetry: dict[str, TelemetryMetricSpec] = Field(default_factory=dict)
+    gnmi: GnmiSpec | None = None
+    snmp: SnmpSpec = Field(default_factory=SnmpSpec)
+    exporter: ExporterSpec = Field(default_factory=ExporterSpec)
+    protocol_priority: list[str] = Field(
+        default_factory=lambda: ["gnmi", "node_exporter", "snmp", "ssh_cli"]
+    )
+    emergency_commands: dict[str, str] = Field(default_factory=dict)
+
+
+class DropLinePatternSpec(IntentModel):
+    re: str
+    why: str | None = None
+    confidence: str | None = None
+
+
+class DropBlockPatternSpec(IntentModel):
+    start_re: str
+    why: str | None = None
+    confidence: str | None = None
+
+
+class MaskSecretSpec(IntentModel):
+    re: str
+    replace: str
+    why: str | None = None
+    confidence: str | None = None
+
+
+class PlatformDiffFilterSpec(IntentModel):
+    indent: str | int = 1
+    comment_prefix: str = "!"
+    drop_line_patterns: list[DropLinePatternSpec] = Field(default_factory=list)
+    drop_blocks: list[DropBlockPatternSpec] = Field(default_factory=list)
+    mask_secrets: list[MaskSecretSpec] = Field(default_factory=list)
+    managed_sections: list[str] = Field(default_factory=list)
+    unmanaged_examples: list[str] = Field(default_factory=list)
+    note: str | None = None
+
+
+class CommonDiffFilterSpec(IntentModel):
+    strip_trailing_whitespace: bool = True
+    collapse_blank_lines: bool = True
+    drop_comment_only_lines: bool = True
+    implicit_lines_to_drop_from_intended: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class DiffFilters(IntentModel):
+    version: int = 1
+    note: str | None = None
+    common: CommonDiffFilterSpec = Field(default_factory=CommonDiffFilterSpec)
+    platforms: dict[Platform | str, PlatformDiffFilterSpec]
+    dynamic_show_output_fields: dict[str, list[str]] = Field(default_factory=dict)

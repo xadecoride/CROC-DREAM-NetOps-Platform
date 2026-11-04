@@ -1,39 +1,13 @@
 {% if intent.bgp %}
 router bgp {{ intent.bgp.asn }}
    router-id {{ intent.bgp.router_id }}
-   no bgp default ipv4-unicast
 {% for neighbor in intent.bgp.neighbors %}
    neighbor {{ neighbor.peer_ip }} remote-as {{ neighbor.remote_asn }}
-{% if neighbor.description is defined and neighbor.description %}
+{% if neighbor.description %}
    neighbor {{ neighbor.peer_ip }} description {{ neighbor.description }}
 {% endif %}
-{% if neighbor.password is defined and neighbor.password %}
-   neighbor {{ neighbor.peer_ip }} password {{ neighbor.password }}
-{% endif %}
-   neighbor {{ neighbor.peer_ip }} send-community extended
 {% endfor %}
-   !
-   address-family ipv4
-{% set prefixes = intent.bgp.neighbors | map(attribute="announced_prefixes") | sum(start=[]) | unique | list %}
-{% if prefixes %}
-{% for prefix in prefixes %}
-      network {{ prefix }}
+{% for prefix in intent.bgp.neighbors | map(attribute="announced_prefixes") | sum(start=[]) | unique %}
+   network {{ prefix }}
 {% endfor %}
-{% else %}
-      network {{ intent.bgp.router_id }}/32
-{% endif %}
-{% for neighbor in intent.bgp.neighbors %}
-      neighbor {{ neighbor.peer_ip }} activate
-{% endfor %}
-   !
-   address-family evpn
-{% for neighbor in intent.bgp.neighbors %}
-      neighbor {{ neighbor.peer_ip }} activate
-      neighbor {{ neighbor.peer_ip }} next-hop-unchanged
-{% endfor %}
-!
-router ospf 1
-   router-id {{ intent.bgp.router_id }}
-   max-lsa 12000
-!
 {% endif %}

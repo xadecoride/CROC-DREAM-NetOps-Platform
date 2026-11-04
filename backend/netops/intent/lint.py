@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from pydantic import ValidationError
 
 from netops.errors import NetOpsError
-from netops.intent.models import DeviceIntent
+from netops.intent.models import DeviceIntent, Inventory, PlatformProfile
 
 FABRIC_SOURCE = "<fabric>"
 
@@ -46,7 +46,9 @@ def issues_from_validation_error(
     ]
 
 
-def lint_fabric(intents: Iterable[DeviceIntent]) -> list[IntentIssue]:
+def lint_fabric(
+    intents: Iterable[DeviceIntent], fabric_id: str | None = None
+) -> list[IntentIssue]:
     router_ids: defaultdict[str, list[str]] = defaultdict(list)
     addresses: defaultdict[str, list[tuple[str, str]]] = defaultdict(list)
 
@@ -55,7 +57,12 @@ def lint_fabric(intents: Iterable[DeviceIntent]) -> list[IntentIssue]:
             router_ids[str(intent.bgp.router_id)].append(intent.hostname)
         for index, interface in enumerate(intent.interfaces):
             if interface.ipv4_address is not None:
-                addresses[str(interface.ipv4_address.ip)].append(
+                desc_lower = (interface.description or "").lower()
+                name_lower = interface.name.lower()
+                ip_str = str(interface.ipv4_address.ip)
+                if "anycast" in desc_lower or name_lower.startswith("vbdif"):
+                    continue
+                addresses[ip_str].append(
                     (intent.hostname, f"interfaces.{index}.ipv4_address")
                 )
 
@@ -85,4 +92,64 @@ def lint_fabric(intents: Iterable[DeviceIntent]) -> list[IntentIssue]:
                 )
                 for hostname, location in owners
             )
+
+    issues.extend(_audit_p2p_subnets(intents))
     return issues
+
+
+def _audit_p2p_subnets(intents: Iterable[DeviceIntent]) -> list[IntentIssue]:
+    subnets_31: defaultdict[str, list[str]] = defaultdict(list)
+    for intent in intents:
+        for interface in intent.interfaces:
+            if (
+                interface.ipv4_address is not None
+                and interface.ipv4_address.network.prefixlen == 31
+            ):
+                subnets_31[str(interface.ipv4_address.network)].append(intent.hostname)
+
+    issues: list[IntentIssue] = []
+    for net, hosts in sorted(subnets_31.items()):
+        if len(hosts) > 2:
+            hosts_str = ", ".join(sorted(hosts))
+            for h in hosts:
+                issues.append(
+                    IntentIssue(
+                        source=FABRIC_SOURCE,
+                        location="interfaces.ipv4_address",
+                        message=f"Подсеть /31 {net} назначена более чем двум узлам: {hosts_str}",
+                        hostname=h,
+                        code="oversubscribed_p2p_subnet",
+                    )
+                )
+    return issues
+
+
+def lint_platforms(
+    platforms: Mapping[str, PlatformProfile],
+    inventory: Inventory | None,
+    *,
+    inventory_source: str = "inventory.yaml",
+) -> list[IntentIssue]:
+    """Check referential integrity: inventory devices must have PlatformProfile."""
+    issues: list[IntentIssue] = []
+    if inventory is None:
+        return issues
+    known_platforms = set(platforms.keys())
+    for device in inventory.devices:
+        plat_str = str(getattr(device.platform, "value", device.platform)).lower()
+        if plat_str not in known_platforms:
+            issues.append(
+                IntentIssue(
+                    source=inventory_source,
+                    location="platform",
+                    message=(
+                        f"Device {device.hostname!r} references unknown or missing "
+                        f"platform profile {plat_str!r}"
+                    ),
+                    hostname=device.hostname,
+                    code="missing_platform_profile",
+                )
+            )
+    return issues
+
+

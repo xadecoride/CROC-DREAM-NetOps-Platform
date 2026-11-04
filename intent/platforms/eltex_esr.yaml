@@ -1,0 +1,83 @@
+# ==============================================================================
+# БЛОК 1: ИДЕНТИФИКАЦИЯ СТЕНДА И ВЕНДОРА (TCP / SSH / CLI ТРИГГЕРЫ)
+# ==============================================================================
+platform: eltex_esr
+vendor: Eltex
+default_password: admin
+default_interface: gigabitethernet 1/0/1
+offline_ports: [2242]
+offline_interfaces:
+  - gigabitethernet 1/0/1
+  - gigabitethernet 1/0/2
+ssh_banners:
+  - eltex
+  - esr
+version_signatures:
+  - ESR
+  - Eltex
+
+# ==============================================================================
+# БЛОК 2: ИНСПЕКЦИЯ ТОПОЛОГИИ И КОНФИГУРАЦИИ (DISCOVERY & DRIFT ENGINE)
+# ==============================================================================
+interface_prefixes:
+  - gigabitethernet
+  - tengigabitethernet
+  - loopback
+  - bridge
+lldp_port_prefixes:
+  - gi
+  - te
+commands:
+  version: show version
+  memory: show memory
+  cpu: show cpu-utilization
+  running_config: show running-config
+  hostname_filter: show running-config | include hostname
+  interfaces_brief: show ip interfaces
+  lldp_neighbors: show lldp neighbors
+  bgp_summary: show ip bgp summary
+
+# ==============================================================================
+# БЛОК 3: ТРИГГЕРЫ ПРОТОКОЛОВ ТЕЛЕМЕТРИИ И КАСКАД ПРИОРИТЕТОВ (CAPABILITIES)
+# ==============================================================================
+gnmi:
+  default_port: 6030
+  check_command: show gnmi
+  match_tokens:
+    - enabled
+    - active
+    - running
+snmp:
+  base_port: 161
+  clab_offset: -600
+  hardware_module: cisco_cpu
+exporter:
+  port: 9100
+  path: /metrics
+protocol_priority:
+  - snmp
+  - ssh_cli
+
+# ==============================================================================
+# БЛОК 4: КАСТОМНЫЙ SSH CLI СБОРЩИК МЕТРИК (POOLED SSH FALLBACK ENGINE)
+# ==============================================================================
+telemetry:
+  cpu_pct:
+    command: show cpu-utilization
+    parser: parse_eltex_cpu
+  memory_pct:
+    command: show memory
+    parser: parse_eltex_memory
+  uplink_util_pct:
+    command: show interfaces | include rate
+    parser: max_cisco_link_utilization
+
+# ==============================================================================
+# БЛОК 5: АВАРИЙНОЕ УПРАВЛЕНИЕ (EMERGENCY HUB)
+# ==============================================================================
+emergency_commands:
+  reset_bgp_sessions: clear bgp all
+  rollback_last_commit: rollback
+  restart_services: clear arp-cache
+  reboot: reload
+  default: show version

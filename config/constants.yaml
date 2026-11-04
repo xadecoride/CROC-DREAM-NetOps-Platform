@@ -1,0 +1,103 @@
+# Единый файл констант платформы CROC DREAM NetOps.
+#
+# Здесь лежат все значения, которые раньше были зашиты в коде: порты консолей, таймауты,
+# интервалы, пути, адреса сервисов, модели LLM. Меняйте значения тут — пересборка кода не нужна.
+#
+# Приоритет (от высшего): переменные окружения NETOPS_* > Runtime Overlay в БД > этот файл.
+# Файл ищется по NETOPS_CONSTANTS_PATH, затем /data/config/constants.yaml, затем config/constants.yaml
+# в корне репозитория. Пароли стендов тут не хранятся: они задаются при подключении стенда
+# или лежат в intent/platforms/*.yaml.
+
+app:
+  name: CROC DREAM NetOps Platform
+  default_fabric_id: croc-dc1-pod1
+  default_domain: croc.lab
+
+paths:
+  intent_repo: intent
+  inventory_file: inventory.yaml
+  templates: templates
+  offline_lab: lab/running
+
+services:
+  database_url: postgresql+psycopg://netops:netops@localhost:5432/netops
+  redis_url: redis://localhost:6379/0
+  grafana_url: http://grafana:3000
+  grafana_admin_user: admin
+  grafana_admin_password: admin
+
+network:
+  driver: offline            # offline | scrapli
+  commit_confirm_timeout_seconds: 180
+  max_ping_loss_percent: 20.0
+  post_check_attempts: 6
+  post_check_interval_seconds: 10.0
+  clab_ssh_port: 221
+  ssh_session_idle_ttl_seconds: 90
+  ssh_session_pool_max: 256
+  ssh_lock_ttl_seconds: 45
+  ssh_lock_acquire_deadline_seconds: 8
+  stand_connection_cache_ttl_seconds: 30
+
+scheduling:
+  drift_scan_interval_seconds: 900
+  metrics_interval_seconds: 60
+  collector_targets_interval_seconds: 3600
+  job_timeout_seconds: 3600
+
+session:
+  ttl_seconds: 43200         # одна смена NOC (12 часов)
+  eternal_ttl_seconds: 315360000  # 10 лет для вечного QR-доступа (static_viewer)
+
+# Консоли и доступ. Роль определяется портом: порты admin/operator/viewer закреплены за ролью.
+console:
+  owner_port: 5173
+  role_ports:
+    admin: 5174
+    operator: 5175
+    viewer: 5176
+  # Внутренние порты nginx контейнера frontend, которые соответствуют ролевым консолям.
+  nginx_role_ports: [81, 82, 83]
+  loopback_hosts: [localhost, 127.0.0.1, "::1", "[::1]", testserver]
+  local_owner_login_token: local-owner-console
+  static_viewer_token: crk_viewer_eternal_croc_dream_netops_qr
+
+# Публичный SSH reverse-tunnel к аутентифицированной консоли.
+tunnel:
+  frontend_internal_host: frontend
+  frontend_internal_port: 80
+  public_port_offsets: [1, 2, 3]     # смещения от owner_port: 5174, 5175, 5176
+  keepalive_seconds: 20
+  connect_timeout_seconds: 6.0
+
+# Эвристики обнаружения устройств.
+discovery:
+  # Пароль «admin» в запросе означает «не задан»: тогда берётся default_password платформы.
+  unset_password_marker: admin
+  # Логин и пароль, которые пробуются, когда ни профиль, ни платформа ничего не задали.
+  default_username: admin
+  fallback_password: admin
+  offline_port_family_min: 2220
+
+llm:
+  ollama:
+    url: ""
+    model: qwen2.5:7b
+    timeout_seconds: 4.0
+  groq:
+    base_url: https://api.groq.com/openai/v1
+    model: qwen/qwen3.8-27b
+    timeout_seconds: 2.0
+  gemini:
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    model: gemini-2.5-flash
+    timeout_seconds: 2.0
+  team:
+    base_url: ""
+    model: MiMo-V2.6-Flash
+    timeout_seconds: 2.0
+
+audit:
+  default_actor: admin           # по умолчанию для set_freeze_state
+  default_freeze_user: operator  # по умолчанию для set_factory_freeze
+

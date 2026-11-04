@@ -16,10 +16,10 @@ if [ $# -ge 1 ] && [ -f "$1" ]; then
   SELECTED_TOPO="$1"
 else
   shopt -s nullglob
-  TOPO_FILES=(*.clab.yaml *.clab.yml ../*.clab.yaml ../*.clab.yml)
-  [ ${#TOPO_FILES[@]} -eq 0 ] && TOPO_FILES=(*.yaml *.yml)
+  TOPO_FILES=("${SCRIPT_DIR}"/*.clab.yaml "${SCRIPT_DIR}"/*.clab.yml *.clab.yaml *.clab.yml ../*.clab.yaml ../*.clab.yml)
+  [ ${#TOPO_FILES[@]} -eq 0 ] && TOPO_FILES=("${SCRIPT_DIR}"/*.yaml *.yaml *.yml)
   shopt -u nullglob
-  SELECTED_TOPO="${TOPO_FILES[0]:-fabric.clab.yaml}"
+  SELECTED_TOPO="${TOPO_FILES[0]:-${SCRIPT_DIR}/fabric.clab.yaml}"
 fi
 
 echo "=============================================="
@@ -45,7 +45,20 @@ except Exception:
 LAB_NAME=$(echo "${PARSE_OUTPUT}" | grep '^LAB_NAME=' | cut -d'=' -f2)
 
 get_node_credentials() {
-  echo "admin:F5ga6jfkig1"
+  local cfg="${CONFIG_DIR}/${2:-}"
+  if [ -n "${CLAB_NODE_CREDS:-}" ]; then
+    echo "${CLAB_NODE_CREDS}"
+    return
+  fi
+  if [ -f "${cfg}" ]; then
+    local parsed
+    parsed=$(awk '/^username / && /password / {for(i=1;i<=NF;i++) if($i=="password") print $2":"$(i+2)}' "${cfg}" | head -n1)
+    if [ -n "${parsed}" ]; then
+      echo "${parsed}"
+      return
+    fi
+  fi
+  echo "${CLAB_DEFAULT_USER:-admin}:${CLAB_DEFAULT_PASS:-admin}"
 }
 
 # --- 1. Arista cEOS ---
@@ -68,24 +81,74 @@ write memory
   fi
 }
 
+RAW_TELNET_PY='
+import re, socket, sys, time
+
+class RawTelnet:
+    def __init__(self, host, port, timeout=10.0):
+        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.sock.settimeout(timeout)
+        self.buf = bytearray()
+
+    def write(self, data):
+        self.sock.sendall(data)
+
+    def read_very_eager(self):
+        self.sock.setblocking(False)
+        out = bytearray()
+        try:
+            while True:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    break
+                out.extend(chunk)
+        except (BlockingIOError, OSError):
+            pass
+        finally:
+            self.sock.setblocking(True)
+        return bytes(out)
+
+    def expect(self, patterns, timeout=2.0):
+        self.sock.settimeout(timeout)
+        compiled = [re.compile(p) for p in patterns]
+        start = time.time()
+        while time.time() - start < timeout:
+            for idx, pat in enumerate(compiled):
+                m = pat.search(self.buf)
+                if m:
+                    end = m.end()
+                    matched = bytes(self.buf[:end])
+                    del self.buf[:end]
+                    return idx, m, matched
+            try:
+                chunk = self.sock.recv(1024)
+                if not chunk:
+                    break
+                self.buf.extend(chunk)
+            except (socket.timeout, BlockingIOError, OSError):
+                break
+        return -1, None, bytes(self.buf)
+
+    def close(self):
+        self.sock.close()
+'
+
 # --- 2. Huawei CE12800 (VRP) ---
 reset_huawei() {
   local node="$1"
   local cfg_file="$2"
   local container="clab-${LAB_NAME}-${node}"
   local full_cfg="${CONFIG_DIR}/${cfg_file}"
-  local creds=$(get_node_credentials "${node}")
+  local creds=$(get_node_credentials "${node}" "${cfg_file}")
   local user=$(echo "$creds" | cut -d':' -f1)
   local pass=$(echo "$creds" | cut -d':' -f2)
 
   if docker inspect "${container}" > /dev/null 2>&1; then
-    docker exec -i "${container}" python3 -W ignore -c '
-import telnetlib, sys, time
-
+    docker exec -i "${container}" python3 -W ignore -c "${RAW_TELNET_PY}"'
 user, pwd, node_name, cfg_name = sys.argv[1:5]
 lines = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
 
-tn = telnetlib.Telnet("127.0.0.1", 5000, timeout=10)
+tn = RawTelnet("127.0.0.1", 5000, timeout=10)
 tn.write(b"\x1a\r\n")
 time.sleep(0.3)
 tn.read_very_eager()
@@ -143,7 +206,7 @@ for i, line in enumerate(lines):
                 in_bgp_af = False
             continue
 
-        # Во всех остальных случаях на '#' гарантированно сбрасываем контекст в system-view
+        # Во всех остальных случаях на "#" гарантированно сбрасываем контекст в system-view
         send_cmd("return", wait=0.08)
         send_cmd("system-view", wait=0.08)
         in_bgp = False
@@ -181,30 +244,35 @@ reset_cisco() {
   local cfg_file="$2"
   local full_cfg="${CONFIG_DIR}/${cfg_file}"
   local container="clab-${LAB_NAME}-${node}"
-  local creds=$(get_node_credentials "${node}")
+  local creds=$(get_node_credentials "${node}" "${cfg_file}")
   local user=$(echo "$creds" | cut -d':' -f1)
   local pass=$(echo "$creds" | cut -d':' -f2)
 
   if docker inspect "${container}" > /dev/null 2>&1; then
-    docker exec -i "${container}" python3 -W ignore -c '
-import telnetlib, sys, time
-
+    docker exec -i "${container}" python3 -W ignore -c "${RAW_TELNET_PY}"'
 user, pwd, node_name, cfg_name = sys.argv[1:5]
 cfg_lines = [l.strip() for l in sys.stdin.read().splitlines() if l.strip()]
 
-tn = telnetlib.Telnet("127.0.0.1", 5000, timeout=10)
+tn = RawTelnet("127.0.0.1", 5000, timeout=10)
 tn.write(b"\r\n\r\n")
 time.sleep(0.5)
 
-for _ in range(5):
+pw_try = 0
+pws = [pwd]
+for _ in range(7):
     idx, _, _ = tn.expect([br"[Uu]sername:", br"[Pp]assword:", br"#", br">"], timeout=2)
     if idx == 0: tn.write(f"{user}\r\n".encode())
-    elif idx == 1: tn.write(f"{pwd}\r\n".encode())
+    elif idx == 1:
+        tn.write(f"{pws[min(pw_try, len(pws) - 1)]}\r\n".encode())
+        pw_try += 1
     elif idx == 2: break
     elif idx == 3:
         tn.write(b"enable\r\n")
-        if tn.expect([br"[Pp]assword:", br"#"], timeout=2)[0] == 0:
-            tn.write(f"{pwd}\r\n".encode())
+        for epw in pws:
+            if tn.expect([br"[Pp]assword:", br"#"], timeout=2)[0] == 0:
+                tn.write(f"{epw}\r\n".encode())
+            else:
+                break
         break
 
 tn.write(b"\r\nterminal length 0\r\nconf t\r\n")

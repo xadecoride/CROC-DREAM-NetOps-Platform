@@ -66,12 +66,35 @@ class JobRecorder:
             if target.status is TargetStatus.PENDING:
                 target.mark(TargetStatus.SKIPPED, reason)
 
-    # Коммитим после каждой строки лога, чтобы UI видел прогресс в реальном времени.
+    # Коммитим после каждой строки лога и пушим в кольцевой буфер StateManager для SSE-стриминга.
     def _log(self, level: LogLevel, step: str, message: str, hostname: str | None) -> None:
-        self._session.add(
-            JobLog(job_id=self._job.id, level=level, step=step, message=message, hostname=hostname)
+        entry = JobLog(
+            job_id=self._job.id, level=level, step=step, message=message, hostname=hostname
         )
+        self._session.add(entry)
         self._session.commit()
+        try:
+            from netops.services.state import get_state_manager
+
+            sm = get_state_manager()
+            key = f"netops:job_stream:{self._job.id}"
+            buf = sm.get_json(key)
+            items = buf if isinstance(buf, list) else []
+            items.append(
+                {
+                    "id": entry.id,
+                    "step": step,
+                    "hostname": hostname,
+                    "level": level.value,
+                    "message": message,
+                    "created_at": entry.created_at.isoformat() if entry.created_at else None,
+                    "progress": self._job.progress,
+                    "status": self._job.status.value,
+                }
+            )
+            sm.set_json(key, items[-200:], ex=600)
+        except Exception:
+            _ = None
         logger.log(
             _PY_LEVELS[level],
             "job=%s step=%s%s %s",

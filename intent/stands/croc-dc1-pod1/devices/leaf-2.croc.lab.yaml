@@ -1,0 +1,99 @@
+hostname: leaf-2.croc.lab
+interfaces:
+- name: Vbdif10
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Anycast gateway VLAN10 10.20.1.0/24
+  ipv4_address: 10.20.1.1/24
+- name: GE1/0/0
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Uplink to spine1 GigabitEthernet3
+  ipv4_address: 10.10.0.3/31
+  ospf_area: 0.0.0.0
+- name: GE1/0/1
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Uplink to spine2 Ethernet2
+  ipv4_address: 10.10.0.7/31
+  ospf_area: 0.0.0.0
+- name: GE1/0/2
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Uplink to spine3 GE1/0/1
+  ipv4_address: 10.10.0.21/31
+  ospf_area: 0.0.0.0
+- name: GE1/0/9
+  enabled: true
+  mode: l2
+  mtu: 1500
+  description: Access to host-b (VLAN 10)
+  access_vlan: 10
+- name: LoopBack0
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Router-ID / BGP announce / VTEP source
+  ipv4_address: 10.255.0.2/32
+  ospf_area: 0.0.0.0
+bgp:
+  asn: 65002
+  router_id: 10.255.0.2
+  neighbors:
+  - peer_ip: 10.10.0.2
+    remote_asn: 65000
+    description: spine1
+    announced_prefixes:
+    - 10.255.0.2/32
+  - peer_ip: 10.10.0.6
+    remote_asn: 65000
+    description: spine2
+    announced_prefixes:
+    - 10.255.0.2/32
+  - peer_ip: 10.10.0.20
+    remote_asn: 65000
+    description: spine3
+    announced_prefixes:
+    - 10.255.0.2/32
+  evpn: true
+  vxlan_vni: 10010
+acls:
+- name: FABRIC-IN
+  rules:
+  - sequence: 10
+    action: permit
+    protocol: icmp
+    source: any
+    destination: any
+  - sequence: 15
+    action: permit
+    protocol: ospf
+    source: any
+    destination: any
+  - sequence: 20
+    action: permit
+    protocol: tcp
+    source: any
+    destination: any
+    dst_port: bgp
+  - sequence: 30
+    action: permit
+    protocol: tcp
+    source: any
+    destination: any
+    src_port: bgp
+  - sequence: 40
+    action: deny
+    protocol: tcp
+    source: any
+    destination: any
+    dst_port: telnet
+  - sequence: 50
+    action: permit
+    protocol: ip
+    source: any
+    destination: any

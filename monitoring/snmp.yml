@@ -1,41 +1,34 @@
+# Конфигурация модуля prometheus/snmp_exporter (формат v0.26+: auths + modules).
+# Опрашивает стандартный IF-MIB и вендорские OID CPU/RAM в рамках единого последовательного
+# SNMP-сеанса на устройство (исключает коллизии UDP-сокетов на WAN socat-релеях).
+
 auths:
   public_v2:
-    version: 2
     community: public
+    security_level: noAuthNoPriv
+    auth_protocol: MD5
+    priv_protocol: DES
+    version: 2
 
 modules:
-  # ─── 1. Стандартный IF-MIB (трафик, ошибки, дропы портов) ─────────────────
+  # ─── 1. Базовый IF-MIB (интерфейсы, трафик, ошибки) ────────────────────────
   if_mib:
-    walk:
-      - 1.3.6.1.2.1.1.3         # sysUpTime
-      - 1.3.6.1.2.1.1.5         # sysName
-      - 1.3.6.1.2.1.2.2.1.2     # ifDescr
-      - 1.3.6.1.2.1.2.2.1.7     # ifAdminStatus
-      - 1.3.6.1.2.1.2.2.1.8     # ifOperStatus
-      - 1.3.6.1.2.1.31.1.1.1.1  # ifName
-      - 1.3.6.1.2.1.31.1.1.1.6  # ifHCInOctets (64-bit RX)
-      - 1.3.6.1.2.1.31.1.1.1.10 # ifHCOutOctets (64-bit TX)
-      - 1.3.6.1.2.1.31.1.1.1.15 # ifHighSpeed
-      - 1.3.6.1.2.1.31.1.1.1.18 # ifAlias
-      - 1.3.6.1.2.1.2.2.1.13    # ifInDiscards
-      - 1.3.6.1.2.1.2.2.1.14    # ifInErrors
-      - 1.3.6.1.2.1.2.2.1.19    # ifOutDiscards
-      - 1.3.6.1.2.1.2.2.1.20    # ifOutErrors
-    metrics:
-      - name: sysUpTime
-        oid: 1.3.6.1.2.1.1.3
-        type: gauge
+    max_repetitions: 10
+    retries: 1
+    timeout: 5s
+    walk: &if_walk
+      - 1.3.6.1.2.1.2.2.1.8       # ifOperStatus
+      - 1.3.6.1.2.1.2.2.1.14      # ifInErrors
+      - 1.3.6.1.2.1.2.2.1.20      # ifOutErrors
+      - 1.3.6.1.2.1.31.1.1.1.6    # ifHCInOctets (64-bit)
+      - 1.3.6.1.2.1.31.1.1.1.10   # ifHCOutOctets (64-bit)
+    metrics: &if_metrics
       - name: ifOperStatus
         oid: 1.3.6.1.2.1.2.2.1.8
         type: gauge
         indexes:
           - labelname: ifIndex
             type: Integer
-        lookups:
-          - labels: [ifIndex]
-            labelname: ifDescr
-            oid: 1.3.6.1.2.1.2.2.1.2
-            type: DisplayString
       - name: ifHCInOctets
         oid: 1.3.6.1.2.1.31.1.1.1.6
         type: counter
@@ -48,20 +41,8 @@ modules:
         indexes:
           - labelname: ifIndex
             type: Integer
-      - name: ifInDiscards
-        oid: 1.3.6.1.2.1.2.2.1.13
-        type: counter
-        indexes:
-          - labelname: ifIndex
-            type: Integer
       - name: ifInErrors
         oid: 1.3.6.1.2.1.2.2.1.14
-        type: counter
-        indexes:
-          - labelname: ifIndex
-            type: Integer
-      - name: ifOutDiscards
-        oid: 1.3.6.1.2.1.2.2.1.19
         type: counter
         indexes:
           - labelname: ifIndex
@@ -72,20 +53,52 @@ modules:
         indexes:
           - labelname: ifIndex
             type: Integer
-      - name: ifHighSpeed
-        oid: 1.3.6.1.2.1.31.1.1.1.15
-        type: gauge
-        indexes:
-          - labelname: ifIndex
-            type: Integer
 
-  # ─── 2. CPU и память для Arista / Linux (HOST-RESOURCES-MIB) ───────────────
+  # ─── 2. IF-MIB + CPU/RAM для Arista / Linux (HOST-RESOURCES-MIB) ───────────
   host_resources:
+    max_repetitions: 10
+    retries: 1
+    timeout: 5s
     walk:
+      - 1.3.6.1.2.1.2.2.1.8
+      - 1.3.6.1.2.1.2.2.1.14
+      - 1.3.6.1.2.1.2.2.1.20
+      - 1.3.6.1.2.1.31.1.1.1.6
+      - 1.3.6.1.2.1.31.1.1.1.10
       - 1.3.6.1.2.1.25.3.3.1.2  # hrProcessorLoad
       - 1.3.6.1.2.1.25.2.3.1.5  # hrStorageSize
       - 1.3.6.1.2.1.25.2.3.1.6  # hrStorageUsed
     metrics:
+      - name: ifOperStatus
+        oid: 1.3.6.1.2.1.2.2.1.8
+        type: gauge
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifHCInOctets
+        oid: 1.3.6.1.2.1.31.1.1.1.6
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifHCOutOctets
+        oid: 1.3.6.1.2.1.31.1.1.1.10
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifInErrors
+        oid: 1.3.6.1.2.1.2.2.1.14
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifOutErrors
+        oid: 1.3.6.1.2.1.2.2.1.20
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
       - name: hrProcessorLoad
         oid: 1.3.6.1.2.1.25.3.3.1.2
         type: gauge
@@ -105,13 +118,65 @@ modules:
           - labelname: hrStorageIndex
             type: Integer
 
-  # ─── 3. CPU и память для Cisco (CISCO-PROCESS-MIB) ─────────────────────────
+  # ─── 3. IF-MIB + CPU/RAM для Cisco (CISCO-PROCESS-MIB) ─────────────────────
   cisco_cpu:
+    max_repetitions: 10
+    retries: 1
+    timeout: 5s
     walk:
+      - 1.3.6.1.2.1.2.2.1.8
+      - 1.3.6.1.2.1.2.2.1.14
+      - 1.3.6.1.2.1.2.2.1.20
+      - 1.3.6.1.2.1.31.1.1.1.6
+      - 1.3.6.1.2.1.31.1.1.1.10
+      - 1.3.6.1.2.1.31.1.1.1.15         # ifHighSpeed (Mbps)
+      - 1.3.6.1.4.1.9.9.109.1.1.1.1.6  # cpmCPUTotal5secRev
       - 1.3.6.1.4.1.9.9.109.1.1.1.1.7  # cpmCPUTotal1minRev
       - 1.3.6.1.4.1.9.9.48.1.1.1.5     # ciscoMemoryPoolUsed
       - 1.3.6.1.4.1.9.9.48.1.1.1.6     # ciscoMemoryPoolFree
     metrics:
+      - name: ifOperStatus
+        oid: 1.3.6.1.2.1.2.2.1.8
+        type: gauge
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifHCInOctets
+        oid: 1.3.6.1.2.1.31.1.1.1.6
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifHCOutOctets
+        oid: 1.3.6.1.2.1.31.1.1.1.10
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifHighSpeed
+        oid: 1.3.6.1.2.1.31.1.1.1.15
+        type: gauge
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifInErrors
+        oid: 1.3.6.1.2.1.2.2.1.14
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifOutErrors
+        oid: 1.3.6.1.2.1.2.2.1.20
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: cpmCPUTotal5secRev
+        oid: 1.3.6.1.4.1.9.9.109.1.1.1.1.6
+        type: gauge
+        indexes:
+          - labelname: cpmCPUTotalIndex
+            type: Integer
       - name: cpmCPUTotal1minRev
         oid: 1.3.6.1.4.1.9.9.109.1.1.1.1.7
         type: gauge
@@ -131,12 +196,50 @@ modules:
           - labelname: ciscoMemoryPoolType
             type: Integer
 
-  # ─── 4. CPU и память для Huawei VRP (HUAWEI-ENTITY-EXTENT-MIB) ─────────────
+  # ─── 4. IF-MIB + CPU/RAM для Huawei VRP (HUAWEI-ENTITY-EXTENT-MIB) ─────────
   huawei_cpu:
+    max_repetitions: 10
+    retries: 1
+    timeout: 5s
     walk:
+      - 1.3.6.1.2.1.2.2.1.8
+      - 1.3.6.1.2.1.2.2.1.14
+      - 1.3.6.1.2.1.2.2.1.20
+      - 1.3.6.1.2.1.31.1.1.1.6
+      - 1.3.6.1.2.1.31.1.1.1.10
       - 1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5  # hwEntityCpuUsage
       - 1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7  # hwEntityMemUsage
     metrics:
+      - name: ifOperStatus
+        oid: 1.3.6.1.2.1.2.2.1.8
+        type: gauge
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifHCInOctets
+        oid: 1.3.6.1.2.1.31.1.1.1.6
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifHCOutOctets
+        oid: 1.3.6.1.2.1.31.1.1.1.10
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifInErrors
+        oid: 1.3.6.1.2.1.2.2.1.14
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
+      - name: ifOutErrors
+        oid: 1.3.6.1.2.1.2.2.1.20
+        type: counter
+        indexes:
+          - labelname: ifIndex
+            type: Integer
       - name: hwEntityCpuUsage
         oid: 1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5
         type: gauge

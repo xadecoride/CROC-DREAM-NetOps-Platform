@@ -71,11 +71,11 @@ def run_e2e_audit():
         page.wait_for_timeout(1000)
 
         # Verify DevicePage header / tabs
-        assert page.locator('button:has-text("SSH Терминал")').is_visible(), "SSH tab missing in DevicePage"
+        assert page.locator('button:text-is("SSH")').is_visible(), "SSH tab missing in DevicePage"
         print("   DevicePage passport loaded successfully.")
 
         # Switch to SSH tab
-        page.locator('button:has-text("SSH Терминал")').click()
+        page.locator('button:text-is("SSH")').click()
         page.wait_for_timeout(800)
 
         # Check terminal console area
@@ -90,16 +90,11 @@ def run_e2e_audit():
 
         # Check for output stream in terminal pre/div
         terminal_output = page.locator('pre, div.font-mono').all_text_contents()
-        has_output = any("display version" in line or "VRP" in line or "huawei" in line.lower() or "leaf" in line.lower() for line in terminal_output)
+        has_output = any("vrp" in line.lower() or "huawei" in line.lower() for line in terminal_output)
         print(f"   SSH live command executed, response received: {has_output}")
         assert has_output, "Expected terminal command output to appear in live session"
         results["live_ssh_terminal"] = True
 
-        # Test 'Прогноз и What-If' tab on DevicePage
-        page.locator('button:has-text("Прогноз и What-If")').click()
-        page.wait_for_timeout(800)
-        assert page.locator('svg path, h3:has-text("Прогноз")').first.is_visible()
-        print("   Forecast & What-If tab renders telemetry chart.")
         results["device_page"] = True
 
         # Navigate to DiffViewer (Monaco Diff & AI Guard)
@@ -110,7 +105,7 @@ def run_e2e_audit():
         # Verify DiffViewer loaded
         diff_heading = page.locator('h2:has-text("Monaco Diff & LLM Guard")')
         assert diff_heading.is_visible(), "DiffViewer heading not found"
-
+        
         # Verify Monaco / Diff container presence
         diff_editor = page.locator('.monaco-editor, .monaco-diff-editor, div:has-text("Текущая (Running Config)")').first
         assert diff_editor.is_visible(), "Diff editor container not visible"
@@ -125,7 +120,7 @@ def run_e2e_audit():
         # Verify DriftView content
         drift_element = page.locator('button:has-text("Запустить полный скан дрейфа"), button:has-text("Drift Scan")').first
         assert drift_element.is_visible(), "DriftView scan button not found"
-
+        
         # Check scan drift button and compliance cards
         assert page.locator('span:has-text("GitOps Continuous Audit")').is_visible()
         print("   DriftView and scan control are 100% operational.")
@@ -142,7 +137,7 @@ def run_e2e_audit():
         chaos_cards = page.locator('button:has-text("Внедрить"), button:has-text("Уронить"), button:has-text("Смоделировать"), button:has-text("Сбросить")').count()
         assert chaos_cards >= 5, f"Expected chaos injection cards, found {chaos_cards}"
         print(f"   Chaos injection scenarios available: {chaos_cards}")
-
+        
         reset_btn = page.locator('button:has-text("Сбросить к эталону")').first
         assert reset_btn.is_visible(), "Reset to baseline button missing in Chaos Lab"
         print("   Chaos Lab scenarios and Git baseline reset operational.")

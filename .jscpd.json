@@ -1,0 +1,19 @@
+{
+  "threshold": 0,
+  "minLines": 6,
+  "minTokens": 50,
+  "ignore": [
+    "**/node_modules/**",
+    "**/.venv/**",
+    "**/dist/**",
+    "**/tests/**",
+    "**/*.json",
+    "**/*.yaml",
+    "**/*.md",
+    "**/.agents/**"
+  ],
+  "path": [
+    "backend/netops",
+    "frontend/src"
+  ]
+}

@@ -1,0 +1,89 @@
+hostname: leaf-4.croc.lab
+interfaces:
+- name: Ethernet1
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Uplink to spine1 GigabitEthernet5
+  ipv4_address: 10.10.0.15/31
+  acl_in: FABRIC-IN
+  ospf_area: 0.0.0.0
+- name: Ethernet2
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Uplink to spine2 Ethernet4
+  ipv4_address: 10.10.0.17/31
+  acl_in: FABRIC-IN
+  ospf_area: 0.0.0.0
+- name: Ethernet3
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Uplink to spine3 GE1/0/3
+  ipv4_address: 10.10.0.25/31
+  acl_in: FABRIC-IN
+  ospf_area: 0.0.0.0
+- name: Loopback0
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Router-ID / BGP announce / VTEP source
+  ipv4_address: 10.255.0.4/32
+  ospf_area: 0.0.0.0
+bgp:
+  asn: 65004
+  router_id: 10.255.0.4
+  neighbors:
+  - peer_ip: 10.10.0.14
+    remote_asn: 65000
+    description: spine1
+    announced_prefixes:
+    - 10.255.0.4/32
+  - peer_ip: 10.10.0.16
+    remote_asn: 65000
+    description: spine2
+    announced_prefixes:
+    - 10.255.0.4/32
+  - peer_ip: 10.10.0.24
+    remote_asn: 65000
+    description: spine3
+    announced_prefixes:
+    - 10.255.0.4/32
+  evpn: true
+acls:
+- name: FABRIC-IN
+  rules:
+  - sequence: 10
+    action: permit
+    protocol: icmp
+    source: any
+    destination: any
+  - sequence: 15
+    action: permit
+    protocol: ospf
+    source: any
+    destination: any
+  - sequence: 20
+    action: permit
+    protocol: tcp
+    source: any
+    destination: any
+    dst_port: bgp
+  - sequence: 30
+    action: permit
+    protocol: tcp
+    source: any
+    destination: any
+    src_port: bgp
+  - sequence: 40
+    action: deny
+    protocol: tcp
+    source: any
+    destination: any
+    dst_port: telnet
+  - sequence: 50
+    action: permit
+    protocol: ip
+    source: any
+    destination: any

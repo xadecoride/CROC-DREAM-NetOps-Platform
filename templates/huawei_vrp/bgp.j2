@@ -1,7 +1,6 @@
 {% if intent.bgp %}
 bgp {{ intent.bgp.asn }}
  router-id {{ intent.bgp.router_id }}
- preference 20 200 200
 {% for neighbor in intent.bgp.neighbors %}
  peer {{ neighbor.peer_ip }} as-number {{ neighbor.remote_asn }}
 {% if neighbor.description %}
@@ -14,18 +13,17 @@ bgp {{ intent.bgp.asn }}
  #
  ipv4-family unicast
   undo synchronization
-{% set prefixes = intent.bgp.neighbors | map(attribute="announced_prefixes") | sum(start=[]) | unique | list %}
-{% if prefixes %}
-{% for prefix in prefixes %}
+{% if intent.bgp.evpn %}
+  preference 20 200 200
+{% endif %}
+{% for prefix in intent.bgp.neighbors | map(attribute="announced_prefixes") | sum(start=[]) | unique %}
   network {{ prefix.network_address }} {{ prefix.netmask }}
 {% endfor %}
-{% else %}
-  network {{ intent.bgp.router_id }} 255.255.255.255
-{% endif %}
-  maximum load-balancing 2
+  maximum load-balancing {{ [intent.bgp.neighbors | length, 1] | max }}
 {% for neighbor in intent.bgp.neighbors %}
   peer {{ neighbor.peer_ip }} enable
 {% endfor %}
+{% if intent.bgp.evpn %}
  #
  l2vpn-family evpn
   policy vpn-target
@@ -33,15 +31,5 @@ bgp {{ intent.bgp.asn }}
   peer {{ neighbor.peer_ip }} enable
   peer {{ neighbor.peer_ip }} advertise irb
 {% endfor %}
-#
-ospf 1 router-id {{ intent.bgp.router_id }}
- area 0.0.0.0
-  network {{ intent.bgp.router_id }} 0.0.0.0
-{% for iface in intent.interfaces %}
-{% if iface.ipv4_address and not iface.name.lower().startswith("loopback") and iface.acl_in %}
-{% set net_addr = iface.ipv4_address.network.network_address if iface.ipv4_address.network is defined else iface.ipv4_address.network_address %}
-  network {{ net_addr }} 0.0.0.1
 {% endif %}
-{% endfor %}
-#
 {% endif %}

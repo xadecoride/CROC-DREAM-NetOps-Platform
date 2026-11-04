@@ -30,7 +30,7 @@
 ---
 
 ## 3. Стенд и физическая проверка
-Развернут на сервере `5.228.243.54:221` под управлением Docker и Containerlab:
+Развернут на сервере `198.51.100.10:221` под управлением Docker и Containerlab:
 - `spine1` (Cisco C8000v / IOS-XE 17.3.8a) — SSH `:2211`
 - `spine2` (Arista cEOSLab 4.32.0F) — SSH `:2212`
 - `leaf1` (Huawei CloudEngine CE12800) — SSH `:2221`

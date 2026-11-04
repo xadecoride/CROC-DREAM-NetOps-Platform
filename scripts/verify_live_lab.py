@@ -24,7 +24,8 @@ from netops.network.base import HealthExpectations
 from netops.settings import Settings
 from netops.toolchain import build_toolchain
 
-INTENT_LIVE = Path(__file__).resolve().parent.parent / "intent-live"
+_ROOT = Path(__file__).resolve().parent.parent
+INTENT_LIVE = _ROOT / "intent-live" if (_ROOT / "intent-live").is_dir() else _ROOT / "intent"
 PORT_TIMEOUT = 3.0
 
 

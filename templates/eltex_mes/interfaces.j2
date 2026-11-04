@@ -1,26 +1,18 @@
-{% set declared = intent.interfaces | map(attribute="name") | join(" ") | lower %}
-{% if intent.bgp and "loopback" not in declared %}
-interface loopback 0
-  description "Router-ID"
-  ip address {{ intent.bgp.router_id }}/32
-  no shutdown
-exit
-{% endif %}
 {% for iface in intent.interfaces %}
 interface {{ iface.name }}
 {% if iface.description %}
-  description "{{ iface.description }}"
+ description {{ iface.description }}
+{% endif %}
+{% if iface.mode == "l3" and not iface.name.startswith("Loopback") %}
+ no switchport
 {% endif %}
 {% if iface.ipv4_address %}
-  ip address {{ iface.ipv4_address.with_prefixlen }}
+ ip address {{ iface.ipv4_address.ip }} {{ iface.ipv4_address.netmask }}
 {% endif %}
-{% if iface.acl_in %}
-  ip access-group {{ iface.acl_in }} in
-{% endif %}
-{% if iface.enabled %}
-  no shutdown
+{% if not iface.enabled %}
+ shutdown
 {% else %}
-  shutdown
+ no shutdown
 {% endif %}
 exit
 {% endfor %}

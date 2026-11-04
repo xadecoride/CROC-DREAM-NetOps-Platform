@@ -1,0 +1,6 @@
+# Дашборды определяются в настраиваемом YAML-файле croc-dream-noc.yaml
+# и синхронизируются напрямую в базу данных PostgreSQL (system_state + таблицы Grafana).
+apiVersion: 1
+
+providers: []
+

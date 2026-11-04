@@ -1,13 +1,8 @@
+{% macro endpoint(value) %}{% if value == "any" %}any{% else %}{{ value.network_address }} {{ value.hostmask }}{% endif %}{% endmacro %}
 {% for acl in intent.acls %}
 ip access-list extended {{ acl.name }}
 {% for rule in acl.rules %}
-{% if rule.dst_port is defined and rule.dst_port %}
-  rule {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} any any eq {{ rule.dst_port }}
-{% elif rule.src_port is defined and rule.src_port %}
-  rule {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} any eq {{ rule.src_port }} any
-{% else %}
-  rule {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} any any
-{% endif %}
+ {{ rule.sequence }} {{ rule.action }} {{ rule.protocol }} {{ endpoint(rule.source) }} {{ endpoint(rule.destination) }}
 {% endfor %}
 exit
 {% endfor %}

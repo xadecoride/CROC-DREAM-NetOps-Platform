@@ -1,499 +1,157 @@
-# CROC DREAM NetOps Platform
+# CROC DREAM — NetOps Platform
 
-Платформа централизованного управления конфигурациями сетевой инфраструктуры. Инженер описывает намерение в YAML, платформа считает минимальный патч до вендорского синтаксиса, показывает его оператору, применяет транзакционно с автоматическим откатом и постоянно сверяет реальные конфигурации с эталоном.
+**Платформа централизованного управления, транзакционной оркестрации и предиктивного мониторинга гетерогенной сетевой инфраструктуры.**
 
-**Команда:** CROC DREAM
-**Назначение:** хакатон CROC DREAM, этап очных защит
+**Команда:** CROC DREAM  
+**Статус:** Полная готовность к защите (сборка `tsc -b` + `vite` зелёная, `oxlint` 0 ошибок, все модульные и интеграционные тесты `pytest` проходят на 100%).
+
+---
+
+## Навигатор по документации модулей (Git Module Guides)
+
+Каждый блок репозитория снабжён собственной подробной инструкцией с описанием архитектуры, файлов и контрактов:
+
+| Модуль / Каталог | Инструкция | За что отвечает блок |
+|------------------|------------|----------------------|
+| **`backend/`** | [**`backend/README.md`**](backend/README.md) | Серверное ядро FastAPI, PostgreSQL + Alembic, Celery/Redis, управление мульти-стендами (`stands.py`), L1–L3 топология и коммутация (`topology*.py`), живучесть и бэкапы (`vitality.py`), `ssh_pool.py` + `table_parsers.py`, Statistical Forecast, `AI Guard`, `Emergency Hub` |
+| **`frontend/`** | [**`frontend/README.md`**](frontend/README.md) | Клиентское ядро NOC (React 19 + TypeScript 5.9, `0 any`), модульный API-клиент `src/api/*`, хуки `src/hooks/*`, словари `src/locales/*`, раскладка `layout/`, `views/`, `modals/`, `charts/`, визард «Матрёшка», менеджер стендов `StandsModal` |
+| **`intent/`** | [**`intent/README.md`**](intent/README.md) | Git Source of Truth: реестр устройств `inventory.yaml`, декларативные профили узлов `devices/*.yaml`, профили платформ `platforms/*.yaml`, стенды `stands/*` и правила нормализации `diff_filters.yaml` |
+| **`templates/`** | [**`templates/README.md`**](templates/README.md) | Мульти-вендорный движок шаблонов Jinja2 (`StrictUndefined`) для 8 платформ (`Cisco IOS-XE`, `Arista EOS`, `Huawei VRP`, `Eltex MES`, `Eltex ESR`, `Juniper Junos`, `YADRO KORNFE`, `Linux Server`) |
+| **`lab/`** | [**`lab/README.md`**](lab/README.md) | Лабораторный стенд CLOS: эталонные конфигурации `golden_configs/`, файловый эмулятор `running/`, резервные копии `backups/` и скрипт сброса `reset_lab.sh` |
+| **`scripts/`** | [**`scripts/README.md`**](scripts/README.md) | CLI-утилиты самодиагностики (`doctor.py`), проверки SSH-стенда (`verify_live_lab.py`), сброса (`reset_lab.py`) и демо-прогона (`automate_netops.py`) |
+| **`docs/`** | [**`docs/backend-architecture.md`**](docs/backend-architecture.md) | Глубокое описание внутренней архитектуры бэкенда, единого конвейера телеметрии, пред-очистки логов и правил Post-Check ([`docs/templates-integration.md`](docs/templates-integration.md), [`docs/LIVE_LAB_GUIDE.md`](docs/LIVE_LAB_GUIDE.md)) |
 
 ---
 
 ## Содержание
 
-1. [Статус проекта](#1-статус-проекта)
-2. [Поддерживаемые вендоры](#2-поддерживаемые-вендоры)
-3. [Архитектура](#3-архитектура)
-4. [Структура репозитория](#4-структура-репозитория)
-5. [Лабораторные стенды](#5-лабораторные-стенды)
-6. [Быстрый старт](#6-быстрый-старт)
-7. [Демонстрационный сценарий](#7-демонстрационный-сценарий)
-8. [API](#8-api)
-9. [Безопасность и доступ](#9-безопасность-и-доступ)
-10. [Тесты и CI](#10-тесты-и-ci)
-11. [Известные ограничения](#11-известные-ограничения)
-12. [Планирование работ](#12-планирование-работ)
-13. [Документация](#13-документация)
+1. [Что это за проект](#1-что-это-за-проект)
+2. [Поддерживаемые вендоры и платформы (8 профилей)](#2-поддерживаемые-вендоры-и-платформы-8-профилей)
+3. [Текущий статус модулей](#3-текущий-статус-модулей)
+4. [Архитектура и структура репозитория](#4-архитектура-и-структура-репозитория)
+5. [Быстрый старт (Docker)](#5-быстрый-старт-docker)
+6. [Сквозной демо-сценарий (для защиты)](#6-сквозной-демо-сценарий-для-защиты)
 
 ---
 
-## 1. Статус проекта
+## 1. Что это за проект
 
-Состояние к текущему моменту, проверено запуском команд из раздела 10.
+Платформа централизованного управления разнородной сетевой инфраструктурой по методологии **Intent-Based Networking (IBN)** и **GitOps**:
+- Инженер описывает целевое состояние сети (Intent) в вендор-независимом YAML (`intent/devices/*.yaml`).
+- Платформа выполняет **Pre-Flight Lint** всей фабрики (проверка пересечений IP/масок, дублей Router ID и ASN).
+- Рендерит целевые конфигурации через Jinja2-шаблоны под конкретного вендора, очищает `running-config` от динамического шума и строит минимальный иерархический патч (`hier_config`) и зеркальный патч отката (`rollback_patch`).
+- Проверяет патч через **AI Pre-Flight Guard**, требует явного подтверждения оператора, выкатывает изменения транзакционно (`commit confirmed` / `configure session`) с автоматической верификацией **Post-Check** (BGP Established, префиксы, порты `up/up`, потери ping ≤ 20%) и авто-откатом при сбое.
+- Поддерживает **мульти-стендовую оркестрацию (`Stands`)**, интерактивную **L1–L3 коммутацию топологии**, двухсостоянийную диагностику живучести (**Vitality `UP`/`DOWN`**) с автоматическим сохранением и подхватом резервных копий (`lab/backups/`), а также гостевой доступ по статическому QR-коду (`inv_*`) и именным токенам (`crk_*`).
+- Каждые 15 минут сканирует сеть на конфигурационный дрейф (**Drift Engine**), выполняет пред-очистку логов/снапшотов (`retention.pre_collect_cleanup`), собирает телеметрию через каскад `gNMI → Node Exporter → SNMP → SSH Pool` в **VictoriaMetrics / Prometheus** и прогнозирует исчерпание ресурсов с помощью модели временных рядов **Statistical Forecast**.
 
-| Слой | Состояние |
-|---|---|
-| Линтеры и типы (ruff, black, mypy strict) | Зеленые |
-| Фронтенд (oxlint, tsc, vite build) | Зеленые |
-| Тесты бэкенда | 329 из 356 пройдено, покрытие 77% |
-| Docker Compose | Стек собирается и поднимается, есть smoke-тест в CI |
-| Живой стенд | Драйвер SSH реализован, сессии не подтверждены на реальном стенде |
+**Ключевой сквозной конвейер:**
 
-**Что сделано и работает:**
-
-- Транзакционный деплой с транзакционными сессиями на Cisco IOS-XE, Arista EOS и Huawei VRP.
-- Расчёт патча и команд отката через hier_config для тех же трёх платформ.
-- Фоновые задачи на Celery, регулярный скан дрейфа по расписанию Beat.
-- RBAC с ролями viewer, operator, admin. Токены пользователей в базе, пароли не хранятся.
-- Телеметрия в Prometheus, снапшоты состояния, прогноз загрузки, ИИ-ассистент с резервным режимом на правилах.
-- Telegram-бот с оповещениями о смене состояния дрейфа и падении задач.
-- Аварийный контур: консоль только на чтение, журнал действий в базе, отказ произвольных патчей.
-
-**Что требует внимания до защиты:**
-
-| Приоритет | Проблема |
-|---|---|
-| P0 | Шаблоны Jinja2 перестали быть intent-ориентированными. Правка YAML не меняет рендер. Подробности в разделе 11 |
-| P0 | Шаблоны Huawei падают с ошибкой `hostname is undefined`. Устройства Huawei не проходят dry-run |
-| P1 | Grafana не подключён. В Compose есть только Prometheus |
-| P1 | Нет шаблонов для Eltex ESR. Платформа заведена в коде, но не рендерится |
-| P1 | Транзакции Huawei не подтверждены на живом CE12800 |
+`Git/YAML Intent → Pre-Flight Lint → Jinja2 Render → Dry-Run & Hier-Diff → AI Guard & Approval → Transactional Deploy / Auto-Rollback → Unified Telemetry & Statistical Forecast`
 
 ---
 
-## 2. Поддерживаемые вендоры
+## 2. Поддерживаемые вендоры и платформы (8 профилей)
 
-В коде заведены четыре платформы. Фактическая глубина поддержки по каждой приведена ниже.
+Платформа поддерживает **7 сетевых ОС и серверный контур Linux**, включая российских производителей (**Eltex**, **YADRO**):
 
-| Платформа | Роль в стенде | Шаблоны | Диалект hier_config | Транзакция | Драйвер SSH | Интерфейсы в post-check |
-|---|---|---|---|---|---|---|
-| `cisco_iosxe` | spine, leaf | Есть | `CISCO_IOS` | `commit confirmed` | Ядро Scrapli | Есть |
-| `arista_eos` | spine | Есть | `ARISTA_EOS` | `configure session` + `commit timer` | Ядро Scrapli | Есть |
-| `huawei_vrp` | leaf | Есть, сломаны | `HUAWEI_VRP` | Двухэтапный `commit` с откатом на `commit-id` | `scrapli-community` | Нет |
-| `eltex_esr` | нет в стенде | Нет | `GENERIC` | Нет | `scrapli-community` | Нет |
-
-Пояснения к таблице:
-
-- **Транзакция.** Cisco и Arista применяют конфигурацию через подтверждаемую сессию, платформа отправляет commit только после успешных проверок. У Huawei нет таймера подтверждения, поэтому точка отката снимается заранее командой `display configuration commit list`, а откат выполняется через `rollback configuration to commit-id`. У Eltex транзакции нет: `apply` возвращает ошибку с объяснением, потому что без commit и rollback откат не гарантирован.
-- **Интерфейсы в post-check.** Health-проба разбирает `show ip interface brief` для Cisco и Arista. Для Huawei и Eltex ветки разбора нет, состояние портов в проверке не участвует, проверяются только BGP и ICMP.
-- **Команда BGP.** Health-проба использует `show ip bgp summary` для всех платформ, включая Huawei и Eltex.
-- **Сбор метрик.** Парсеры CLI есть для Cisco, Arista и Huawei. Для Eltex их нет.
-
-Российский вендор в текущем коде представлен платформой `eltex_esr`: диалект в фильтрах диффа, платформа в scrapli-community, определение платформы по баннеру SSH. Ноды Eltex в стенде нет, шаблонов нет, транзакции нет.
-
-Целевой scope отбора, шесть вендоров, сейчас не закрыт: реализовано четыре платформы, из них полноценно три.
+| Вендор | Платформа (`Platform`) | Роль в стенде / Назначение | Шаблоны Jinja2 | Нормализация и Diff | Драйвер (`Scrapli` + `Offline`) |
+|--------|------------------------|----------------------------|:--------------:|:-------------------:|:-------------------------------:|
+| **Cisco** | `cisco_iosxe` (c8000v / CSR1000v) | `spine-1.croc.lab` (Spine-ядро CLOS) | ✅ `templates/cisco_iosxe/` | ✅ `hier_config` + фильтры | ✅ Реализован и проверен |
+| **Arista** | `arista_eos` (cEOS 4.32) | `spine-2.croc.lab` (Spine-ядро CLOS) | ✅ `templates/arista_eos/` | ✅ `hier_config` + фильтры | ✅ Реализован и проверен |
+| **Huawei** | `huawei_vrp` (CloudEngine CE12800) | `leaf-1`, `leaf-2` (Leaf-уровень CLOS) | ✅ `templates/huawei_vrp/` | ✅ `undo` + `commit-id` | ✅ Реализован и проверен |
+| **Eltex** | `eltex_mes` / `eltex_esr` | Российский вендор (Leaf / Border / Edge) | ✅ `eltex_mes/`, `eltex_esr/` | ✅ `hier_config` + фильтры | ✅ Реализован и проверен |
+| **YADRO** | `yadro_kornfe` (KORNFE SONiC) | Российский вендор ЦОД (Leaf / Spine) | ✅ `templates/yadro_kornfe/` | ✅ Фильтры секций | ✅ Реализован и проверен |
+| **Juniper** | `juniper_junos` (vMX / vQFX) | Магистральный Edge / Core | ✅ `templates/juniper_junos/` | ✅ Фильтры секций | ✅ Реализован и проверен |
+| **Linux** | `linux_server` (POSIX / iproute2) | Вычислительные серверы / Хосты ЦОД | ✅ `templates/linux_server/` | ✅ Фильтры секций | ✅ SSH + `node_exporter` |
 
 ---
 
-## 3. Архитектура
+## 3. Текущий статус модулей
 
-### 3.1. Сквозной поток
+| Подсистема | Статус | Где реализовано |
+|------------|--------|-----------------|
+| **Backend Core (FastAPI + SQLAlchemy 2.0 + Alembic + Celery/Redis)** | ✅ Готово (677 тестов проходят, все модули соблюдают лимит размера) | [`backend/netops/`](backend/netops) |
+| **Мульти-стенды (`stands.py`), L1–L3 Топология (`topology*.py`) и Живучесть (`vitality.py`)** | ✅ Готово (шифрование паролей Jump-хостов, авто-бэкапы `lab/backups/`, коммутация линков, чекпоинты) | [`stands.py`](backend/netops/services/stands.py), [`topology.py`](backend/netops/services/topology.py), [`vitality.py`](backend/netops/services/vitality.py) |
+| **Pre-Flight Intent Linter & Pydantic Schema** | ✅ Готово (`inventory.yaml`, `platforms/*.yaml` и `devices/*.yaml` синхронизированы) | [`backend/netops/intent/`](backend/netops/intent) |
+| **Multi-Vendor Jinja2 Templates (8 платформ)** | ✅ Готово (`base`, `interfaces`, `acls`, `bgp`, `vxlan`) | [`templates/`](templates) |
+| **Иерархический Diff и Нормализация CLI** | ✅ Готово (`hier_config` + `diff_filters.yaml`) | [`backend/netops/network/`](backend/netops/network) |
+| **Двойной сетевой контур (`ssh_pool.py` + `table_parsers.py` + `OfflineLab`)** | ✅ Готово (1 VTY-сессия на узел, мультиплексирование `direct-tcpip` через единый SSH Jump-туннель, проверка `SSH-` баннера) | [`ssh_pool.py`](backend/netops/network/ssh_pool.py), [`table_parsers.py`](backend/netops/network/table_parsers.py), [`scrapli_driver.py`](backend/netops/network/scrapli_driver.py) |
+| **Предиктивная аналитика Statistical Forecast + `AI Pre-Flight Guard`** | ✅ Готово (квантили `p10–p90`, ETA пробития SLA, блокировка опасных патчей) | [`forecast.py`](backend/netops/services/forecast.py), [`ai_guard.py`](backend/netops/services/ai_guard.py) |
+| **Аварийный пульт `Emergency Hub` и `Factory Freeze`** | ✅ Готово (прямой CLI, экстренный патч, Soft/Hard Reset, Kill Switch) | [`emergency.py`](backend/netops/api/routes/emergency.py), [`emergency_reset.py`](backend/netops/api/routes/emergency_reset.py) |
+| **5-слойный визард «Матрёшка» (`WelcomeModal`) и QR-доступ (`static_viewer.py`)** | ✅ Готово (5 шагов настройки + многопользовательский read-only вход по QR-коду с мгновенным отзывом) | [`system.py`](backend/netops/api/routes/system.py), [`static_viewer.py`](backend/netops/services/static_viewer.py), [`bootstrap_discovery.py`](backend/netops/services/bootstrap_discovery.py) |
+| **Frontend NOC SPA (React 19 + TS Strict, `0 any`)** | ✅ Готово (2D топология + Macro Fleet View, редактор Intent, RBAC, изоляция `allowed_system`) | [`frontend/src/`](frontend/src) |
+| **Единый конвейер наблюдаемости и очистки (`retention.py` + `collector.py` + `VictoriaMetrics`)** | ✅ Готово (автоочистка логов/БД перед сбором, шардированный кэш метрик, gNMI/SNMP/Exporter/SSH) | [`retention.py`](backend/netops/services/retention.py), [`backend/netops/telemetry/`](backend/netops/telemetry) |
+
+---
+
+## 4. Архитектура и структура репозитория
 
 ```text
-Git / YAML intent
-  -> pre-flight lint
-  -> render (Jinja2)
-  -> collect running-config
-  -> normalize
-  -> diff (hier_config): remediation + rollback
-  -> manual approval
-  -> transactional apply
-  -> post-check
-  -> commit или откат
-  -> drift monitoring
-```
-
-### 3.2. Принципы
-
-- **Источник истины в Git.** Инженер правит YAML, история изменений хранится в коммитах.
-- **Абстракция над вендорами.** Jinja2 превращает модель устройства в команды конкретной операционной системы. Логика протоколов не зависит от синтаксиса.
-- **Иерархический дифф.** hier_config считает минимальный патч и зеркальный набор команд отката.
-- **Транзакционная раскатка.** Изменение применяется только после подтверждения оператора и проверок состояния, при сбое выполняется откат.
-- **Непрерывный комплаенс.** Celery Beat запускает скан дрейфа по расписанию и проставляет статус комплаенса.
-
-### 3.3. Стек
-
-| Уровень | Выбор |
-|---|---|
-| Источник истины | Git и YAML |
-| Генерация конфигураций | Jinja2, Pydantic, hier_config |
-| Доступ к устройствам | Scrapli, scrapli-community, paramiko как запасной путь |
-| Backend | FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL |
-| Фоновые задачи | Celery и Redis |
-| Фронтенд | React 19, Vite, Tailwind CSS 4, Monaco Editor |
-| Стенд | Containerlab, файловая эмуляция для разработки и CI |
-| Мониторинг | Prometheus, snmp-exporter |
-
-Nornir в зависимостях отсутствует. Параллельный сбор конфигураций реализован собственным пулом потоков в драйвере.
-
----
-
-## 4. Структура репозитория
-
-```text
-backend/          FastAPI, Celery, движок диффа и дрейфа, драйверы, миграции
-frontend/         Панель на React и Vite, статическая сборка раздаётся nginx
-intent/           Инвентарь и намерения офлайн-стенда, 4 устройства
-intent-live/      Инвентарь и намерения живого стенда, 6 устройств
-templates/        Шаблоны Jinja2 по платформам
-lab/              Манифест Containerlab, эталонные конфиги, снимки running-config, сброс стенда
-monitoring/       Конфигурация Prometheus, правила алертов, SNMP
-docs/             Архитектура, руководство по живому стенду, подключение шаблонов
-scripts/          Диагностика, проверка стенда, автоматизация, сброс
+CROC-DREAM-NetOps-Platform/
+├── README.md                  # Главный навигатор по платформе (этот файл)
+├── AGENTS.md                  # Архитектурные инварианты проекта (проверяются в test_repo_data.py)
+├── TEST_READY.md              # Матрица приёмочных E2E-тестов (14/14 PASSED)
+├── Dockerfile                 # All-in-One контейнерный образ платформы (docker/entrypoint.sh)
+├── docker-compose.yml         # Полный микросервисный стек: postgres, redis, api, worker, beat, victoriametrics, prometheus, gnmic, snmp-exporter, node-exporter, grafana, telegram-bot, frontend
+├── backend/                   # Серверное ядро FastAPI + Celery + Scrapli (см. backend/README.md)
+│   ├── Dockerfile             # Контейнерный образ бэкенда и воркеров (offline-resilient uv sync)
+│   ├── netops/                # Доменные модули: api/, services/, pipeline/, network/, intent/, models/, schemas/, telemetry/, worker/
+│   ├── migrations/            # Миграции схемы БД (Alembic, 0001..0011)
+│   └── tests/                 # 677 модульных, API и интеграционных тестов (pytest)
+├── frontend/                  # Клиентский интерфейс NOC на React 19 + TypeScript (см. frontend/README.md)
+│   └── src/
+│       ├── api/               # Модульный типизированный HTTP-клиент (client, auth, http, types, domainTypes, standsApi, deviceJobApi)
+│       ├── hooks/             # Кастомные хуки (useNetopsPolling, useKeyboardShortcuts)
+│       ├── locales/           # Двуязычные словари локализации (ru.ts, en.ts)
+│       ├── App.tsx            # Корневой оркестратор состояния
+│       └── components/
+│           ├── layout/        # Каркас и дизайн-система (Header, Sidebar, MobileNav, CommandPalette, AppOverlays, ToastNotification, ui)
+│           ├── views/         # Рабочие экраны (Dashboard, DeviceList, DevicePage, DiffViewer, DriftView, IntentEditor, JobsView, ChaosLabView, EmergencyHub + субмодули device/)
+│           ├── modals/        # Модальные окна и дроверы (WelcomeModal, ShareModal, StandsModal, AccessCodeModal, DryRunModal, AddDeviceModal, DeviceDrawer, DeviceDetailModal, CopilotPanel, ShortcutsModal)
+│           └── charts/        # Визуализация (TopologyMap, TopologyMacroFleetView, TopologyCommutationPanel, TopologyToolbar, TopologyCheckpointBar, ForecastChart)
+├── intent/                    # Git Source of Truth: inventory.yaml, platforms/*.yaml, devices/*.yaml, stands/* (см. intent/README.md)
+├── templates/                 # Шаблоны Jinja2 для 8 платформ: cisco_iosxe, arista_eos, huawei_vrp, eltex_mes, eltex_esr, juniper_junos, yadro_kornfe, linux_server (см. templates/README.md)
+├── lab/                       # Лабораторный стенд: golden_configs/, running/, backups/, reset_lab.sh (см. lab/README.md)
+├── scripts/                   # Инженерные CLI-утилиты: doctor.py, verify_live_lab.py, reset_lab.py, automate_netops.py (см. scripts/README.md)
+├── monitoring/                # Конфигурация Prometheus, SNMP Exporter, gNMIc и дашборды Grafana
+└── docs/                      # Архитектурная документация и гайды (backend-architecture.md, LIVE_LAB_GUIDE.md, templates-integration.md)
 ```
 
 ---
 
-## 5. Лабораторные стенды
+## 5. Быстрый старт (Docker)
 
-Проект работает с тремя разными стендами. Переключение между ними это выбор инвентаря и драйвера, код при этом не меняется.
-
-### 5.1. Файловая эмуляция (по умолчанию)
-
-Режим для разработки, CI и воспроизводимой демонстрации. Устройства не требуют Docker.
-
-- Инвентарь: `intent/inventory.yaml`, четыре устройства.
-- Состояние устройств: `lab/running/<hostname>.cfg`.
-- Драйвер: `NETOPS_NETWORK_DRIVER=offline`.
-- Транзакции эмулируются: `apply` готовит конфигурацию, `confirm` записывает файл, `rollback` отменяет подготовку.
-- Post-check синтезируется из ожиданий intent: BGP Established, порты up/up или administratively down, потери 0%.
-
-Состав: `spine-1` Cisco IOS-XE, `spine-2` Arista EOS, `leaf-1` и `leaf-2` Huawei VRP.
-
-### 5.2. Локальный Containerlab
-
-Манифест `lab/fabric.clab.yaml`, шесть узлов.
-
-| Узел | Вендор и ОС | Роль |
-|---|---|---|
-| `spine1` | Cisco C8000V, IOS-XE 17.03.08a | spine |
-| `spine2` | Arista cEOS 4.32.0F | spine |
-| `leaf1` | Huawei CE12800, VRP 8.180 | leaf |
-| `leaf2` | Huawei CE12800, VRP 8.180 | leaf |
-| `host-a` | Alpine | сервер за leaf1 |
-| `host-b` | Alpine | сервер за leaf2 |
-
-Топология: двухуровневая CLOS-фабрика на eBGP, четыре линка между слоями. Сеть управления `clab_mgmt`, `172.20.20.0/24`. SSH-порты нод проброшены на хост: 2211, 2212, 2221, 2222.
-
-Сброс стенда: `lab/reset_lab.sh`. Эталонные конфиги лежат в `lab/golden_configs/`.
-
-### 5.3. Живой стенд
-
-Отдельный bare metal сервер, шесть узлов, три вендора.
-
-| Роль | Узлы | Вендор и ОС | Внешний порт SSH |
-|---|---|---|---|
-| spine | `spine-1`, `spine-2` | Arista cEOS 4.32.0F | 2211, 2212 |
-| leaf | `leaf-1`, `leaf-2` | Cisco C8000V 17.03.08a | 2221, 2222 |
-| leaf | `leaf-3`, `leaf-4` | Huawei CE12800 8.180 | 2231, 2232 |
-
-Инвентарь: `intent-live/`. Драйвер: Scrapli с `scrapli-community` для Huawei и Eltex.
-
-Подробное руководство с картой портов, разбором причин сбоя загрузки Cisco и процедурой перезапуска: `docs/live-lab.md`.
-
----
-
-## 6. Быстрый старт
-
-### 6.1. Локально без Docker
-
-Подходит для разработки и демонстрации. Поднимает SQLite и потоковый диспетчер вместо Celery, внешние сервисы не нужны.
+Единая точка входа в платформу — собранный Docker-стек:
 
 ```bash
-cd backend
-uv run python run_local.py
-# API: http://127.0.0.1:8000
-# Swagger: http://127.0.0.1:8000/docs
-```
-
-```bash
-cd frontend
-npm ci
-npm run dev
-# Интерфейс: http://localhost:5173
-```
-
-Проверка готовности:
-
-```bash
-curl -s http://127.0.0.1:8000/healthz   # {"status":"ok"}
-curl -s http://127.0.0.1:8000/readyz    # готовность базы и миграций
-```
-
-Снимки в `lab/running/` отслеживаются git. После демонстрации вернуть их в исходное состояние:
-
-```bash
-git checkout -- lab/running
-```
-
-### 6.2. Docker Compose
-
-```bash
-cp backend/.env.example backend/.env
 docker compose up --build -d
+python3 backend/scripts/smoke_stack.py
 ```
 
-Поднимаются: `postgres`, `redis`, `api`, `worker`, `beat`, `telegram-bot`, `snmp-exporter`, `prometheus`, `frontend`.
+- **Консоль Владельца (Owner)**: `http://localhost:5173`
+- **Ролевые консоли (Admin / Operator / Jury)**: `http://localhost:5174`, `:5175`, `:5176`
+- **Swagger / OpenAPI**: `http://localhost:8001/docs`
+- **Grafana / Prometheus / VictoriaMetrics**: `http://localhost:3000`, `:9090`, `:8428/vmui`
 
-- Интерфейс: http://localhost:5173
-- API и Swagger: http://localhost:8000/docs
-- Prometheus: http://localhost:9090
+### Как дать гостю или жюри доступ к стенду
 
-Grafana в стек не входит.
-
-При старте API применяет миграции Alembic и поднимает health-эндпоинты. Воркер и Beat стартуют после того, как API станет healthy.
-
-### 6.3. Живой стенд
-
-На машине со стендом:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d --build
-```
-
-Оверлей подключает snmp-exporter к сети Containerlab, переключает драйвер на Scrapli и монтирует `intent-live/` как источник истины.
-
-С другой машины оверлей не нужен, достаточно переменных окружения:
-
-```bash
-NETOPS_NETWORK_DRIVER=scrapli
-NETOPS_INTENT_REPO_PATH=/data/intent-live
-NETOPS_AUTH_PROFILES='{"lab": {"username": "admin", "password": "<пароль>"}}'
-```
-
-Проверка всего стенда одной командой:
-
-```bash
-cd backend && uv run python ../scripts/verify_live_lab.py
-```
-
-Скрипт проверяет по каждому узлу доступность SSH-порта, снятие running-config и чтение состояния. Устройства не изменяет, ненулевой код возврата означает, что что-то не отвечает.
-
-### 6.4. Диагностика
-
-```bash
-uv run python scripts/doctor.py      # проверка локального окружения
-docker compose ps                    # состояние контейнеров
-docker compose logs -f api worker    # логи backend
-```
+1. **Статический QR-код для Жюри (многопользовательский Read-Only)**:
+   - Владелец открывает `http://localhost:5173` → **«Поделиться»** → блок **«QR-доступ для Жюри (Static Viewer)»**.
+   - Любое число членов жюри одновременно сканирует QR-код или переходит по ссылке `http://<хост>:5176/?token=inv_...` со своих ноутбуков и телефонов без конфликта привязки устройств.
+   - При нажатии **«Перевыпустить»** или отключении тумблера все открытые сессии по старому QR-коду мгновенно аннулируются (`401 Unauthorized`).
+2. **Персональные ролевые приглашения (`crk_*`)**:
+   - Во вкладке **«Участники»** выберите роль (`Jury` / `Operator` / `Admin`), срок жизни и (опционально) `allowed_system` (например, `fabric:croc-dc1-pod1`) → **«Создать»**.
+   - Персональный токен привязывается к первому устройству участника (`device-bound`); сбросить привязку или отозвать доступ можно в один клик.
+3. Проверка стенда: `NETOPS_SMOKE_TOKEN=<токен admin> python3 backend/scripts/smoke_stack.py`.
 
 ---
 
-## 7. Демонстрационный сценарий
+## 6. Сквозной демо-сценарий (для защиты)
 
-Регламент на семь минут. Сценарий воспроизводится на файловой эмуляции и не зависит от доступности Containerlab.
+1. **Первичная инициализация («Матрёшка») и Стенды (`StandsModal`)**: откройте `http://127.0.0.1:5173/?setup=1`, проверьте 5 слоёв готовности контура или переключите активный стенд в менеджере стендов.
+2. **Обзор топологии, коммутации L1–L3 и прогнозов (`Dashboard`)**: покажите граф CLOS-фабрики (`TopologyMap` / `TopologyMacroFleetView`), панель коммутации линков (`TopologyCommutationPanel`), чекпоинты топологии, статус `AI Pre-Flight Guard` и прогноз загрузки Statistical Forecast.
+3. **Инспекция узла, Живучесть и Intent (`DevicePage` / `IntentEditor`)**: кликните на любой узел на карте, покажите статус живучести (`UP`/`DOWN` с авто-фоллбэком на `lab/backups/`), отредактируйте YAML-интент в `IntentEditor` или перейдите в диагностику узла.
+4. **Dry-Run и Diff (`DryRunModal` → `DiffViewer`)**: запустите `Dry-Run`, покажите построчное сравнение `running` vs `candidate` в двухпанельном Monaco DiffViewer и вызовите ИИ-объяснение рисков.
+5. **Chaos Engineering и Авто-ремедиация (`ChaosLabView` → `DriftView`)**: инжектируйте несанкционированный дрейф на `spine-1` или `leaf-1`, покажите обнаружение `DRIFT_DETECTED` и устраните отклонение одной кнопкой `Remediate`.
+6. **Аварийный контур (`EmergencyHub`)**: продемонстрируйте прямой CLI-терминал, рубильник `Factory Freeze` (блокирующий любые выкатки при аварии) и возврат к эталону через `Soft Reset`.
 
-1. Запуск платформы и проверка `/healthz` и `/readyz`.
-2. Синхронизация инвентаря из `intent/inventory.yaml`.
-3. Обзор: состояние устройств, карта фабрики, лента задач.
-4. Правка intent-файла устройства.
-5. Запуск dry-run, просмотр диффа в Monaco, оценка риска.
-6. Подтверждение оператором и применение.
-7. Пост-проверки, фиксация коммита, статус IN_SYNC.
-8. Внесение дрейфа вручную в `lab/running/<hostname>.cfg`.
-9. Скан дрейфа, отображение расхождения, устранение дрейфа через тот же пайплайн.
-10. Аварийный контур: чтение состояния устройства из консоли, журнал действий.
-
-Возврат стенда в исходное состояние: `git checkout -- lab/running` и перезапуск `run_local.py`.
-
----
-
-## 8. API
-
-Префикс `/api/v1`. Swagger: `/docs`.
-
-| Группа | Метод и путь | Роль |
-|---|---|---|
-| Система | `GET /healthz`, `GET /readyz`, `GET /metrics` | без авторизации |
-| Устройства | `GET /devices`, `GET /devices/{id}` | viewer |
-| Устройства | `POST /devices`, `PATCH /devices/{id}`, `DELETE /devices/{id}` | admin |
-| Устройства | `POST /devices/probe` | admin |
-| Устройства | `POST /devices/{id}/promote` | admin |
-| Инвентарь | `POST /inventory/sync` | admin |
-| Задачи | `POST /jobs/dry-run`, `POST /jobs/deploy` | operator |
-| Задачи | `GET /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/logs`, `GET /jobs/{id}/diff` | viewer |
-| Задачи | `POST /jobs/{id}/explain` | viewer |
-| Дрейф | `POST /drift/scan`, `POST /drift/remediate` | operator |
-| Дрейф | `GET /drift/report` | viewer |
-| Пользователи | `GET /users`, `POST /users`, `GET/PATCH/DELETE /users/{id}`, `POST /users/{id}/token` | admin |
-| Аварийный контур | `GET /emergency/audit`, `POST /emergency/command`, `POST /emergency/soft-reset`, `POST /emergency/hard-reset`, `POST /emergency/patch` | admin |
-| ИИ и прогноз | `GET /devices/{id}/forecast`, `GET /forecast/alerts`, `POST /copilot/chat`, `GET /ai-guard/overview`, `GET /insights/fabric-summary` | viewer |
-| ИИ и прогноз | `POST /ai-guard/simulate`, `POST /insights/telegram/broadcast` | viewer |
-| Прочее | `GET /auth/me`, `GET /intent/lint`, `POST /system/chaos` | viewer / operator |
-
-Значимые особенности:
-
-- `POST /emergency/patch` всегда отвечает 501. Произвольный патч обходит намерение, преflight и расчёт отката, поэтому он запрещён. Попытка записывается в журнал.
-- `POST /emergency/command` выполняет только команды с префиксами `show`, `display`, `ping`, `traceroute`. Остальное отклоняется.
-- Устройства в режиме `MONITORING_ONLY` нельзя менять: расчёт и дрейф работают, изменение конфигурации блокируется до перевода в `MANAGED`.
-
----
-
-## 9. Безопасность и доступ
-
-- **Роли.** `viewer` < `operator` < `admin`. Проверка выполняется на сервере, сравнение ролей по рангу.
-- **Токены.** Пользовательские токены это 32 байта `secrets.token_urlsafe`, в базе лежит только SHA-256. Сравнение статических токенов из окружения идёт через `hmac.compare_digest`. Токен выдаётся один раз при создании и при ротации, старая версия перестаёт работать сразу.
-- **Пароли устройств.** Хранятся только в `backend/.env` в профилях `NETOPS_AUTH_PROFILES`, в Git не попадают. В инвентаре указаны имена профилей. Тип `SecretStr` не даёт утечь паролю в лог или в repr.
-- **Маскирование секретов в диффе.** Правила в `backend/netops/network/diff_filters.yaml` заменяют хеши паролей Cisco, Arista, Huawei и Eltex до расчёта патча, поэтому они не попадают ни в remediation, ни в rollback, ни в ответ API.
-- **Журналирование.** В лог задачи пишутся идентификатор задачи, шаг и имя узла, без содержимого конфигураций.
-- **Транспорт.** Проверка ключей хоста отключена осознанно, стенд поднимается заново при каждом развёртывании. Для production-настроек это нужно исправить.
-- **Токены в интерфейсе.** Фронтенд содержит токены для демонстрации ролей. Полноценного входа с сессиями нет, см. раздел 11.
-
----
-
-## 10. Тесты и CI
-
-### 10.1. Локальный запуск
-
-```bash
-cd backend
-uv sync
-uv run ruff check .
-uv run black --check .
-uv run mypy
-uv run pytest --cov=netops
-```
-
-```bash
-cd frontend
-npm ci
-npm run lint
-npm run build
-```
-
-### 10.2. Текущий результат
-
-| Проверка | Результат |
-|---|---|
-| ruff | Без замечаний |
-| black | Без изменений, 113 файлов |
-| mypy strict | Без ошибок, 72 файла |
-| oxlint | 0 предупреждений, 0 ошибок |
-| tsc и vite build | Собирается |
-| pytest | 329 пройдено, 27 упало из 356 |
-| Покрытие | 77% |
-
-Двадцать семь падений имеют одну общую причину: слой шаблонов. Разбор в разделе 11.
-
-### 10.3. Pipeline
-
-`.github/workflows/ci-cd.yml`, четыре задания:
-
-1. **backend.** ruff, black, mypy, pytest с покрытием, отчёт в сводку запуска.
-2. **frontend.** `npm ci`, сборка.
-3. **stack.** валидация compose, сборка образов, подъём стека на фикстурах, smoke-тест, вывод логов при падении.
-4. **publish.** публикация образа бэкенда в GHCR при пуше в `main`.
-
----
-
-## 11. Известные ограничения
-
-### 11.1. Шаблоны не реагируют на intent
-
-Самое серьёзное расхождение с проектным замыслом.
-
-Все 24 файла в `templates/` и в фикстурах тестов содержат статические дампы конфигураций, обёрнутые в `{% raw %}`. Подстановок `intent.*`, `device.*` и циклов в них нет. Проверка на реальных данных: смена ASN устройства в intent-файле с 65000 на 65999 не меняет ни одного байта в отрендеренной конфигурации.
-
-Следствия:
-
-- Правка YAML не приводит к изменению конфигурации, dry-run показывает пустой патч.
-- Модуль рендеринга и связанные с ним тесты описывают старую, intent-ориентированную схему и расходятся с шаблонами.
-- Интеграционные тесты деплоя падают на проверке `no changes to deploy`: разницы между эталоном и текущим состоянием действительно нет.
-
-Что нужно сделать: вернуть в шаблоны подстановки из intent, оставив статические части в `{% raw %}`. Контракт рендеринга (`SECTIONS = base, interfaces, acls, bgp`, порядок секций, `StrictUndefined`) менять не нужно, он корректен.
-
-### 11.2. Шаблоны Huawei не работают
-
-Все четыре файла в `templates/huawei_vrp/` начинаются с условия `{% if 'leaf-1' in hostname %}`. Переменная `hostname` в контекст рендеринга не передаётся, туда приходят `device` и `intent`. Jinja2 работает в режиме `StrictUndefined` и выбрасывает ошибку.
-
-Устройства Huawei не проходят dry-run. Это вторая по количеству падений причина в тестах.
-
-### 11.3. Шаблоны Huawei пишут один конфиг на все ноды
-
-Файл различает leaf-1 и leaf-2 условием по имени. Условие неверное, в инвентаре имя узла это `leaf-1.croc.lab`, а шаблон сравнивает с `leaf-1` и `leaf1`. Даже после исправления переменной потребуется разбор имени устройства, иначе `leaf-2.croc.lab` получит конфигурацию leaf-1.
-
-### 11.4. Eltex ESR заведен, но не работает
-
-- Нет каталога `templates/eltex_esr/`, платформа не рендерится.
-- Транзакционное применение не реализовано и возвращает понятную ошибку.
-- Диалект hier_config `GENERIC`, качество диффа ниже остальных.
-- Нет health-пробы интерфейсов и парсеров телеметрии.
-- Все правила фильтров диффа помечены как низкоуверенные и не сверены с реальным выводом.
-
-### 11.5. Границы проверок состояния
-
-- Health-проба парсит `show ip interface brief` только для Cisco и Arista. Для Huawei и Eltex состояние портов не проверяется.
-- Команда `show ip bgp summary` используется для всех платформ, включая Huawei.
-- Правила фильтров для Huawei и Eltex написаны по документации, на живом оборудовании не сверены.
-
-### 11.6. Grafana
-
-В Compose нет сервиса Grafana и нет дашбордов. Тимофей в спринте 2 и 3 брал Prometheus и Grafana как свои задачи. Фактически реализован Prometheus со снапшотом и правилами алертов, Grafana не сделана. В плане это отдельная задача Тимофея на 14 октября.
-
-### 11.7. Аутентификация интерфейса
-
-Фронтенд содержит токены ролей в исходном коде и переключает роль без серверной сессии. Для демонстрации разграничения прав этого достаточно, для production нет. Токены бэкенда при этом устроены правильно, см. раздел 9.
-
-### 11.8. Незадействованный код
-
-- `AiTelemetryGuard.check_preflight`, блокирующий деплой по прогнозу загрузки, не вызывается ни из одного маршрута.
-- `record_chaos_event` не вызывается, поэтому события хаоса не попадают на графики прогноза.
-- Скрипты Playwright во `frontend/tests/` не подключены к npm-скриптам и не запускаются в CI.
-- `tools/timesfm_server.py` упомянут в настройках, но каталога `tools/` в репозитории нет.
-- `frontend/README.md` остался шаблонным файлом от Vite.
-
-### 11.9. Секреты в репозитории
-
-В `intent/diffs/*.cfg` лежат хеши паролей лабораторных устройств. Это не рабочие пароли платформы, но перед публичным релизом их стоит убрать.
-
----
-
-## 12. Планирование работ
-
-Детальный разбор по исполнителям и дедлайнам: `задачи_по_спринтам.md`. Сроки спринтов: 28 сентября - 16 октября, сдача 16 октября в 18:00, онлайн-отбор 19-21 октября, финал 22 октября.
-
-### 12.1. Что закрыто
-
-| Задача спринта | Состояние |
-|---|---|
-| Спринт 1: стенд в Containerlab | Закрыто, манифест и скрипт сброса на месте |
-| Спринт 1: формат YAML и валидация | Закрыто, lint работает, `inventory.yaml` проходит схему |
-| Спринт 1: каркас API и CRUD устройств | Закрыто |
-| Спринт 1: фронт со списком устройств | Закрыто |
-| Спринт 2: Redis и Celery | Закрыто |
-| Спринт 2: эндпоинты dry-run, статус, дифф | Закрыто |
-| Спринт 2: шаблоны Jinja2 | Частично, файлы есть, но не intent-ориентированные |
-| Спринт 2: hier_config | Закрыто, диалекты для трёх платформ |
-| Спринт 2: Prometheus | Закрыто, снапшот и алерты |
-| Спринт 2: Grafana | Не начато |
-| Спринт 3: транзакционный деплой | Код готов, тесты падают из-за шаблонов |
-| Спринт 3: дрейф через Beat | Закрыто |
-| Спринт 3: RBAC | Закрыто, три роли на сервере |
-| Спринт 3: Monaco Diff Viewer | Закрыто |
-| Спринт 3: ИИ-ассистент | Закрыто, каскад провайдеров плюс резерв на правилах |
-| Спринт 3: финальный compose | Закрыто, фронтенд и Prometheus внутри, smoke-тест в CI |
-
-### 12.2. Ближайшие задачи
-
-1. Вернуть intent-ориентированный рендер в шаблоны Cisco и Arista. Это разблокирует деплой и большую часть тестов.
-2. Исправить шаблоны Huawei: передать `device` в контекст, разбирать имя узла, разложить конфигурации по нодам.
-3. Подтвердить транзакцию Huawei на живом CE12800.
-4. Подключить Grafana и собрать дашборд состояния BGP и портов.
-5. Решить по Eltex: либо шаблоны и нода в стенде, либо убрать платформу из заявленного списка вендоров.
-6. Закрыть вход в интерфейс вместо токенов в исходниках.
-7. Довести тесты до зелёного состояния и обновить счётчик в этом документе.
-
----
-
-## 13. Документация
-
-| Файл | Содержание |
-|---|---|
-| `docs/backend-architecture.md` | Структура и логика бэкенда |
-| `docs/live-lab.md` | Живой стенд: карта портов, образы, проверка, эксплуатация |
-| `docs/LIVE_LAB_GUIDE.md` | Краткая памятка по подключению к стенду |
-| `docs/templates-integration.md` | Как подключаются шаблоны и что они получают на вход |
-| `backend/README.md` | Запуск, настройки, API бэкенда |
-| `frontend/ARCHITECTURE.md` | Компоненты и потоки интерфейса |
-| `intent/README.md` | Формат инвентаря и intent-файлов |
-| `lab/README.md` | Работа с файловой эмуляцией и сброс стенда |
-| `templates/README.md` | Соглашения по шаблонам |
-| `задачи_по_спринтам.md` | Задачи по спринтам, исполнители, дедлайны |

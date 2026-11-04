@@ -1,7 +1,6 @@
 from netops.network.base import (
     BgpSessionState,
     ChangePlan,
-    CommandRunner,
     ConfigCollector,
     ConfigDeployer,
     ConfigDiff,
@@ -24,7 +23,6 @@ from netops.network.rendering import JinjaConfigRenderer, RenderError
 __all__ = [
     "BgpSessionState",
     "ChangePlan",
-    "CommandRunner",
     "ConfigCollector",
     "ConfigDeployer",
     "ConfigDiff",

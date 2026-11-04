@@ -1,527 +1,212 @@
-"""AI-assisted insights: metric forecasts, predicted threshold breaches and the Copilot chat."""
+"""AI-assisted insights: hybrid RRF search, AI Guard, and fabric summary."""
 
 from __future__ import annotations
 
 import asyncio
 import re
-from typing import Annotated, Any, Literal
+from dataclasses import dataclass
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from netops.api.deps import ContainerDep, DeviceServiceDep, Viewer
-from netops.services.forecast import ForecastRead, build_forecast
+from netops.api.routes.devices import list_allowed_devices
+from netops.api.routes.insights_copilot import (
+    COPILOT_SYSTEM,
+    AiGuardResponse,
+    AiGuardSimulateRequest,
+    CopilotAction,
+    CopilotActionType,
+    CopilotReply,
+    CopilotRequest,
+    _sanitize_action_for_role,
+    extract_copilot_action,
+    generate_fallback_action,
+)
+from netops.api.routes.insights_copilot import (
+    router as insights_copilot_router,
+)
 from netops.services.llm import chat_with_llm
-from netops.services.telemetry import METRICS
+
+__all__ = [
+    "COPILOT_SYSTEM",
+    "AiGuardResponse",
+    "AiGuardSimulateRequest",
+    "CopilotAction",
+    "CopilotActionType",
+    "CopilotReply",
+    "CopilotRequest",
+    "HybridSearchHit",
+    "RankedDevice",
+    "_sanitize_action_for_role",
+    "extract_copilot_action",
+    "generate_fallback_action",
+    "hybrid_rank_devices",
+    "router",
+    "select_rag_devices",
+]
+
+_SYNONYMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("huawei_vrp", ("huawei", "vrp", "хуавей", "хуавее", "хуавея", "cloudengine")),
+    ("cisco_iosxe", ("cisco", "ios", "iosxe", "nxos", "циско", "циске", "nexus")),
+    ("arista_eos", ("arista", "eos", "ариста", "аристе", "ceos")),
+    ("juniper_junos", ("juniper", "junos", "джунипер", "vqfx", "vmx")),
+    ("eltex_mes", ("eltex", "mes", "esr", "элтекс")),
+    ("yadro_kornfe", ("yadro", "kornfe", "ядро", "корнфе")),
+    ("linux_server", ("linux", "server", "ubuntu", "линукс", "сервер")),
+    ("role_spine", ("spine", "спайн", "спайне", "спайны", "ядро", "магистрал", "core")),
+    ("role_leaf", ("leaf", "лиф", "лифе", "лифы", "tor", "тор", "доступ")),
+    ("role_border", ("border", "бордер", "границ", "fw", "firewall", "межсетев")),
+    ("state_drift", ("drift", "дрейф", "рассинхрон", "расхожд", "изменен")),
+    ("state_down", ("unreachable", "down", "недоступ", "упал", "лежит", "ssh")),
+    ("state_anomaly", ("anomaly", "alert", "degraded", "blackhole", "storm", "bgp", "аномал", "авария", "проблем", "блэкхол", "шторм", "бгп", "риск")),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RankedDevice:
+    device: Any
+    rrf_score: float
+    lexical_score: float
+    semantic_score: float
+    lexical_rank: int
+    semantic_rank: int
+    match_reason: str
+
+
+def _concepts(text: str) -> set[str]:
+    low = text.lower()
+    return {tag for tag, roots in _SYNONYMS if any(r in low for r in roots)}
+
+
+def hybrid_rank_devices(
+    query: str,
+    devices: list[Any],
+    *,
+    ai_anomalies: dict[str, str] | None = None,
+    k: int = 60,
+) -> list[RankedDevice]:
+    """Rank devices using lexical token matching and concept synonyms."""
+    if not devices:
+        return []
+    q = query.strip().lower()
+    q_tokens = [t for t in re.split(r"[^a-zа-яё0-9._-]+", q) if len(t) >= 2]
+    q_conc = _concepts(q)
+    anomalies = ai_anomalies if isinstance(ai_anomalies, dict) else {}
+
+    lex_scores: list[float] = []
+    sem_scores: list[float] = []
+    for d in devices:
+        host = str(getattr(d, "hostname", "")).lower()
+        short = host.split(".")[0]
+        ip = str(getattr(d, "management_ip", "")).lower()
+        plat = str(getattr(d, "platform", "")).lower()
+        role = str(getattr(d, "role", "")).lower()
+        status = str(getattr(d, "status", "")).lower()
+        site = str(getattr(d, "site", "") or "").lower()
+        anom = anomalies.get(getattr(d, "hostname", ""), "").lower()
+        doc = f"{host} {ip} {plat} {role} {status} {site} {anom}"
+
+        ls = 12.0 if (host and (host in q or q in (short, ip))) else (9.0 if short in q_tokens else 0.0)
+        for tok in q_tokens:
+            ls += 8.0 if tok in (host, short, ip) else (4.5 if (tok in host or tok in ip) else (3.5 if tok in (plat, role, status, site) else (1.5 if tok in doc else 0.0)))
+        lex_scores.append(ls)
+
+        d_conc = _concepts(doc)
+        if "drift" in status:
+            d_conc |= {"state_drift", "state_anomaly"}
+        if "unreachable" in status:
+            d_conc |= {"state_down", "state_anomaly"}
+        if getattr(d, "hostname", "") in anomalies:
+            d_conc.add("state_anomaly")
+        ss = len(q_conc & d_conc) * 4.0 + (3.5 if (q_conc & {"state_anomaly", "state_drift", "state_down"} and getattr(d, "hostname", "") in anomalies) else 0.0)
+        sem_scores.append(ss)
+
+    lex_rank = {idx: r for r, idx in enumerate(sorted(range(len(devices)), key=lambda i: (-lex_scores[i], i)))}
+    sem_rank = {idx: r for r, idx in enumerate(sorted(range(len(devices)), key=lambda i: (-sem_scores[i], i)))}
+    ranked = [
+        RankedDevice(
+            device=d,
+            rrf_score=round((1.0 / (k + lex_rank[i] + 1) if lex_scores[i] > 0 else 0.0) + (1.0 / (k + sem_rank[i] + 1) if sem_scores[i] > 0 else 0.0), 6),
+            lexical_score=round(lex_scores[i], 3),
+            semantic_score=round(sem_scores[i], 3),
+            lexical_rank=lex_rank[i] + 1,
+            semantic_rank=sem_rank[i] + 1,
+            match_reason="hybrid" if (lex_scores[i] > 0 and sem_scores[i] > 0) else ("lexical" if lex_scores[i] > 0 else ("semantic" if sem_scores[i] > 0 else "baseline")),
+        )
+        for i, d in enumerate(devices)
+    ]
+    ranked.sort(key=lambda r: (-r.rrf_score, -r.lexical_score, -r.semantic_score, str(getattr(r.device, "hostname", ""))))
+    return ranked
+
+
+def select_rag_devices(
+    query: str,
+    devices: list[Any],
+    *,
+    selected_device_id: int | None = None,
+    ai_anomalies: dict[str, str] | None = None,
+    top_k: int = 12,
+) -> list[Any]:
+    """Select Top-K relevant devices + unhealthy/selected nodes for LLM context."""
+    if len(devices) <= top_k:
+        return list(devices)
+    ranked = hybrid_rank_devices(query, devices, ai_anomalies=ai_anomalies)
+    anom_hosts = set((ai_anomalies if isinstance(ai_anomalies, dict) else {}).keys())
+    chosen: list[Any] = []
+    seen: set[Any] = set()
+
+    def _add(dev: Any) -> None:
+        key = getattr(dev, "id", None) or getattr(dev, "hostname", id(dev))
+        if key not in seen:
+            seen.add(key)
+            chosen.append(dev)
+
+    for d in devices:
+        st = str(getattr(d, "status", "")).upper()
+        if getattr(d, "id", None) == selected_device_id or "DRIFT" in st or "UNREACHABLE" in st or getattr(d, "hostname", "") in anom_hosts:
+            _add(d)
+    for r in ranked:
+        if len(chosen) >= top_k and r.lexical_score == 0 and r.semantic_score < 2.0:
+            break
+        _add(r.device)
+        if len(chosen) >= max(top_k, len(seen)):
+            break
+    return chosen
+
 
 router = APIRouter(tags=["insights"])
 
-Metric = Annotated[str, Query(pattern="^(" + "|".join(METRICS) + ")$")]
-Horizon = Annotated[int, Query(ge=12, le=288)]
 
 
-class ForecastAlert(BaseModel):
-    device_id: int
-    hostname: str
-    metric: str
-    label: str
-    threshold: float
-    breach_in_minutes: int
+_RATE_LIMIT_BUCKETS: dict[str, list[float]] = {}
 
 
-CopilotActionType = Literal["dry_run", "remediate", "open_device", "scan_drift", "open_diff"]
+def _check_rate_limit(key: str, limit: int = 30, window_seconds: float = 60.0) -> None:
+    """Sliding-window rate limiter for expensive AI/broadcast endpoints."""
+    import time
 
-
-class CopilotAction(BaseModel):
-    type: CopilotActionType = Field(..., description="Action type for 1-click action or navigation")
-    label: str = Field(..., description="Action button display label")
-    device_id: int | None = Field(default=None, description="Target device ID if applicable")
-    device_ids: list[int] = Field(default_factory=list, description="Target device IDs if multiple")
-    payload: dict[str, Any] = Field(default_factory=dict, description="Parameters for execution")
-
-
-class CopilotRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
-    device_id: int | None = None
-    screen: str | None = Field(
-        default=None,
-        description="Active UI screen: dashboard, topology, devices, device, diff, drift, jobs",
-    )
-
-
-class CopilotReply(BaseModel):
-    answer: str
-    provider: str
-    action: CopilotAction | None = None
-
-
-COPILOT_SYSTEM = (
-    "Ты — AI Copilot платформы автоматизации сетей CLOS (Spine-Leaf). "
-    "Отвечай по-русски, кратко и по делу, опираясь только на переданный контекст сети. "
-    "Метрики в контексте симулированы. Если данных не хватает — скажи об этом. "
-    "Не предлагай применять изменения без dry-run и проверки diff.\n\n"
-    "Если ситуация требует действия оператора (устранение дрейфа, запуск dry-run, "
-    "просмотр diff, переход к проблемному узлу или сканирование), в конце ответа на отдельной "
-    "строке укажи действие:\n"
-    "ACTION: <type>|<label>|<device_id>\n"
-    "Допустимые типы: remediate, dry_run, open_device, scan_drift, open_diff.\n"
-    "Примеры:\n"
-    "ACTION: remediate|Устранить дрейф|1\n"
-    "ACTION: dry_run|Запустить Dry-Run|2\n"
-    "ACTION: open_device|Перейти к leaf-1|1\n"
-    "ACTION: scan_drift|Сканировать дрейф|\n"
-    "Если действие не требуется, не добавляй строку ACTION."
-)
-
-
-def extract_copilot_action(
-    text: str, default_device_id: int | None = None
-) -> tuple[str, CopilotAction | None]:
-    """Parse trailing ACTION: type|label|device_id tag from LLM output."""
-    match = re.search(
-        r"(?:^|\n)ACTION:\s*([a-z_]+)\s*\|\s*([^|\n]+?)(?:\s*\|\s*(\d+)?)?\s*$",
-        text.strip(),
-        re.MULTILINE,
-    )
-    if not match:
-        return text.strip(), None
-
-    act_type = match.group(1).strip()
-    label = match.group(2).strip()
-    raw_id = match.group(3)
-    dev_id = int(raw_id) if raw_id and raw_id.isdigit() else default_device_id
-
-    valid_types = {"dry_run", "remediate", "open_device", "scan_drift", "open_diff"}
-    if act_type in valid_types:
-        clean_text = text[: match.start()].rstrip()
-        return clean_text, CopilotAction(type=act_type, label=label, device_id=dev_id)
-
-    return text.strip(), None
-
-
-def _device_fallback_action(
-    selected: Any,
-    alerts: list[ForecastAlert],
-) -> tuple[str, CopilotAction | None]:
-    if str(selected.status) == "DRIFT_DETECTED":
-        return (
-            f"Устройство {selected.hostname}: обнаружен дрейф конфигурации относительно "
-            f"эталона Git SoT. Рекомендуется применить исправление HierConfig.",
-            CopilotAction(
-                type="remediate",
-                label=f"Устранить дрейф на {selected.hostname}",
-                device_id=selected.id,
-            ),
+    now = time.monotonic()
+    if len(_RATE_LIMIT_BUCKETS) > 1024:
+        stale_keys = [
+            k
+            for k, ts_list in _RATE_LIMIT_BUCKETS.items()
+            if not ts_list or (now - ts_list[-1]) >= window_seconds
+        ]
+        for k in stale_keys:
+            _RATE_LIMIT_BUCKETS.pop(k, None)
+        if len(_RATE_LIMIT_BUCKETS) > 1024:
+            _RATE_LIMIT_BUCKETS.clear()
+    bucket = [ts for ts in _RATE_LIMIT_BUCKETS.get(key, []) if now - ts < window_seconds]
+    if len(bucket) >= limit:
+        _RATE_LIMIT_BUCKETS[key] = bucket
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded ({limit} requests per {int(window_seconds)}s). Please wait.",
         )
-    dev_alerts = [a for a in alerts if a.device_id == selected.id]
-    if dev_alerts:
-        a = dev_alerts[0]
-        return (
-            f"Устройство {selected.hostname}: прогнозируется превышение порога {a.threshold:g}% "
-            f"по «{a.label}» через ~{a.breach_in_minutes} мин. Рекомендуется префлайт-проверка.",
-            CopilotAction(
-                type="dry_run",
-                label=f"Запустить Dry-Run для {selected.hostname}",
-                device_id=selected.id,
-            ),
-        )
-    return (
-        f"Устройство {selected.hostname} ({selected.role}, {selected.platform}): "
-        f"статус {selected.status}. Конфигурация синхронизирована с эталоном.",
-        CopilotAction(
-            type="open_diff",
-            label=f"Посмотреть Diff {selected.hostname}",
-            device_id=selected.id,
-        ),
-    )
-
-
-def _screen_fallback_action(
-    screen: str | None,
-    alerts: list[ForecastAlert],
-) -> tuple[str, CopilotAction | None] | None:
-    """Screen-specific recommendations when configuration is synchronized."""
-    if screen == "drift":
-        return (
-            "Все устройства в синхронизации с Git SoT. Доступно внеочередное сканирование фабрики.",
-            CopilotAction(type="scan_drift", label="Запустить сканирование дрейфа"),
-        )
-
-    if screen == "diff":
-        if alerts:
-            first = alerts[0]
-            return (
-                f"Экран верификации изменений (Diff): прогнозируется нагрузка на {first.hostname} "
-                f"(«{first.label}», пробой через ~{first.breach_in_minutes} мин). "
-                f"Рекомендуется Dry-Run.",
-                CopilotAction(
-                    type="dry_run",
-                    label=f"Запустить Dry-Run для {first.hostname}",
-                    device_id=first.device_id,
-                ),
-            )
-        return (
-            "Экран верификации изменений (Diff/Dry-Run). "
-            "Расхождений нет, доступен префлайт-прогон.",
-            CopilotAction(type="dry_run", label="Запустить префлайт Dry-Run"),
-        )
-
-    if screen == "topology" and alerts:
-        first = alerts[0]
-        return (
-            f"Топология фабрики: прогнозируется превышение порога на узле {first.hostname} "
-            f"(«{first.label}», пробой через ~{first.breach_in_minutes} мин).",
-            CopilotAction(
-                type="open_device",
-                label=f"Перейти к {first.hostname}",
-                device_id=first.device_id,
-            ),
-        )
-
-    if screen == "devices" and alerts:
-        first = alerts[0]
-        return (
-            f"Инвентарь устройств: прогнозируется риск на узле {first.hostname} "
-            f"(«{first.label}», пробой через ~{first.breach_in_minutes} мин).",
-            CopilotAction(
-                type="open_device",
-                label=f"Открыть {first.hostname}",
-                device_id=first.device_id,
-            ),
-        )
-
-    return None
-
-
-def _nominal_fallback_action(
-    screen: str | None,
-    total_devices: int,
-) -> tuple[str, CopilotAction | None]:
-    """Quiet / nominal state fallback actions."""
-    if screen == "topology":
-        return (
-            f"Топология фабрики стабильна ({total_devices} узлов). Загрузка линков в норме, "
-            f"дрейф отсутствует.",
-            CopilotAction(type="dry_run", label="Запустить префлайт Dry-Run"),
-        )
-    if screen == "devices":
-        return (
-            f"Инвентарь устройств в норме: {total_devices} узлов синхронизированы с Git SoT, "
-            f"аномалий не прогнозируется.",
-            CopilotAction(type="dry_run", label="Запустить префлайт Dry-Run"),
-        )
-    return (
-        f"Сеть в штатном режиме. Всего устройств: {total_devices}, дрейф отсутствует, "
-        f"аномалий не прогнозируется.",
-        CopilotAction(type="dry_run", label="Запустить префлайт Dry-Run"),
-    )
-
-
-def generate_fallback_action(  # noqa: PLR0911
-    data: CopilotRequest,
-    devices: list[Any],
-    alerts: list[ForecastAlert],
-) -> tuple[str, CopilotAction | None]:
-    """Deterministic rule-based reply and actionable button generator when LLM is offline."""
-    drifting = [d for d in devices if str(d.status) == "DRIFT_DETECTED"]
-    selected = None
-    if data.device_id is not None:
-        selected = next((d for d in devices if d.id == data.device_id), None)
-
-    # 0. User Intent Check (Greetings, Deploy Checks, Help)
-    msg = data.message.lower().strip()
-    if any(msg.startswith(g) for g in ["ghbdtn", "привет", "здравствуй", "hello", "hi", "добрый"]):
-        return (
-            "Привет! Я AI Copilot платформы NetOps. Я анализирую риски конфигураций, "
-            "дрейф в сетевой фабрике и помогаю запускать безопасный Dry-Run. "
-            "Задайте вопрос по устройствам или выберите действие.",
-            CopilotAction(type="dry_run", label="Запустить префлайт Dry-Run"),
-        )
-    if any(w in msg for w in ["готовност", "деплой", "deploy", "проверк"]):
-        return (
-            "Проверка готовности к деплою: фабрика находится в стабильном состоянии. "
-            "Рекомендуется выполнить предварительную верификацию через Dry-Run "
-            "перед накатом конфигурации.",
-            CopilotAction(type="dry_run", label="Запустить префлайт Dry-Run"),
-        )
-    if any(w in msg for w in ["dry-run", "dry_run", "dry run", "префлайт", "холостой"]):
-        target_dev = None
-        for d in devices:
-            host_prefix = d.hostname.split(".")[0].lower()
-            if d.hostname.lower() in msg or host_prefix in msg:
-                target_dev = d
-                break
-        if target_dev:
-            return (
-                f"Подготовлен запуск префлайт-проверки Dry-Run для {target_dev.hostname}.",
-                CopilotAction(
-                    type="dry_run",
-                    label=f"Запустить Dry-Run для {target_dev.hostname}",
-                    device_id=target_dev.id,
-                ),
-            )
-        return (
-            "Подготовлен запуск префлайт-проверки Dry-Run для сетевой фабрики.",
-            CopilotAction(type="dry_run", label="Запустить префлайт Dry-Run"),
-        )
-
-    # 1. Device-specific context
-    if selected is not None:
-        return _device_fallback_action(selected, alerts)
-
-    # 2. Network-wide context
-    if drifting:
-        drift_names = ", ".join(d.hostname for d in drifting)
-        if len(drifting) == 1:
-            return (
-                f"В фабрике обнаружен дрейф конфигурации на устройстве {drift_names}. "
-                f"Рекомендуется устранить расхождение.",
-                CopilotAction(
-                    type="remediate",
-                    label=f"Устранить дрейф на {drifting[0].hostname}",
-                    device_id=drifting[0].id,
-                ),
-            )
-        return (
-            f"В фабрике обнаружен дрейф конфигурации на {len(drifting)} устройствах "
-            f"({drift_names}).",
-            CopilotAction(
-                type="remediate",
-                label=f"Устранить дрейф ({len(drifting)} устр.)",
-                device_ids=[d.id for d in drifting],
-            ),
-        )
-
-    # 3. Screen-specific context (when configuration is synchronized)
-    screen_action = _screen_fallback_action(data.screen, alerts)
-    if screen_action is not None:
-        return screen_action
-
-    # 4. Global forecast alert fallback (Dashboard or general context)
-    if alerts:
-        first = alerts[0]
-        return (
-            f"Конфигурация синхронизирована. Ближайший риск: {first.hostname}, "
-            f"метрика «{first.label}», пробой через ~{first.breach_in_minutes} мин.",
-            CopilotAction(
-                type="open_device",
-                label=f"Открыть {first.hostname}",
-                device_id=first.device_id,
-            ),
-        )
-
-    # 5. Quiet / nominal state fallback
-    return _nominal_fallback_action(data.screen, len(devices))
-
-
-@router.get(
-    "/devices/{device_id}/forecast",
-    response_model=ForecastRead,
-    summary="Metric history and TimesFM forecast of a device",
-)
-async def device_forecast(
-    device_id: int,
-    service: DeviceServiceDep,
-    container: ContainerDep,
-    _: Viewer,
-    metric: Metric = "uplink_util_pct",
-    horizon: Horizon = 72,
-) -> ForecastRead:
-    device = service.get(device_id)
-    return await asyncio.to_thread(
-        build_forecast,
-        container.settings,
-        device.id,
-        device.hostname,
-        str(device.role),
-        metric,
-        horizon,
-        session_factory=container.session_factory,
-    )
-
-
-@router.get(
-    "/forecast/alerts",
-    response_model=list[ForecastAlert],
-    summary="Devices predicted to cross a metric threshold within the horizon",
-)
-async def forecast_alerts(
-    service: DeviceServiceDep, container: ContainerDep, _: Viewer, horizon: Horizon = 72
-) -> list[ForecastAlert]:
-    devices = list(service.list_devices(limit=500))
-    tasks = [
-        asyncio.to_thread(
-            build_forecast,
-            container.settings,
-            device.id,
-            device.hostname,
-            str(device.role),
-            metric,
-            horizon,
-            session_factory=container.session_factory,
-        )
-        for device in devices
-        for metric in METRICS
-    ]
-    forecasts = await asyncio.gather(*tasks)
-    alerts = [
-        ForecastAlert(
-            device_id=f.device_id,
-            hostname=f.hostname,
-            metric=f.metric,
-            label=f.label,
-            threshold=f.threshold,
-            breach_in_minutes=f.breach_in_minutes,
-        )
-        for f in forecasts
-        if f.breach_in_minutes is not None
-    ]
-    return sorted(alerts, key=lambda a: a.breach_in_minutes)
-
-
-@router.post("/copilot/chat", response_model=CopilotReply, summary="Ask the AI Copilot")
-async def copilot_chat(
-    data: CopilotRequest, service: DeviceServiceDep, container: ContainerDep, user: Viewer
-) -> CopilotReply:
-    devices = list(service.list_devices(limit=500))
-    alerts = await forecast_alerts(service, container, user)
-    lines = [f"- {d.hostname}: {d.role}, {d.platform}, статус {d.status}" for d in devices]
-    lines += [
-        f"Прогноз: {a.hostname} достигнет порога {a.threshold:g}% по «{a.label}» "
-        f"через ~{a.breach_in_minutes} мин"
-        for a in alerts
-    ]
-    if data.screen:
-        lines.insert(0, f"Текущий экран оператора: {data.screen}.")
-    if data.device_id is not None:
-        selected = next((d for d in devices if d.id == data.device_id), None)
-        if selected is None:
-            raise HTTPException(status_code=404, detail="Device not found")
-        lines.insert(
-            0, f"Пользователь смотрит устройство {selected.hostname} ({selected.management_ip})."
-        )
-    context = "\n".join(lines)
-
-    llm_prompt = f"Контекст:\n{context}\n\nВопрос: {data.message}"
-    reply = await chat_with_llm(container.settings, COPILOT_SYSTEM, llm_prompt)
-    if reply is not None:
-        answer_text, action = extract_copilot_action(reply[0], default_device_id=data.device_id)
-        msg_lower = data.message.lower()
-        if any(w in msg_lower for w in ["dry-run", "dry_run", "dry run", "префлайт", "холостой"]):
-            _, fallback_act = generate_fallback_action(data, devices, alerts)
-            action = fallback_act
-        elif action is None:
-            _, fallback_act = generate_fallback_action(data, devices, alerts)
-            if any(w in msg_lower for w in ["дрейф", "drift", "remediat", "устрани", "исправ"]):
-                action = fallback_act
-        return CopilotReply(answer=answer_text, provider=reply[1], action=action)
-
-    summary, fallback_action = generate_fallback_action(data, devices, alerts)
-    return CopilotReply(
-        answer=f"{summary}\n\n(LLM недоступна — автоматическая рекомендация Rule-Engine.)",
-        provider="Rule-Engine (offline)",
-        action=fallback_action,
-    )
-
-
-class AiGuardSimulateRequest(BaseModel):
-    hostname: str
-    anomaly_type: Literal["blackhole", "storm", "clear"]
-
-
-class AiGuardResponse(BaseModel):
-    hostname: str
-    healthy: bool
-    metric: str
-    observed_value: float
-    expected_range: tuple[float, float]
-    deviation_pct: float
-    problem: str | None = None
-    message: str = ""
-    provider: str = ""
-    injected_simulation: str | None = None
-
-
-@router.get(
-    "/ai-guard/check/{device_id}",
-    response_model=AiGuardResponse,
-    summary="Runtime error & anomaly detection via TimesFM 3.0",
-)
-@router.get(
-    "/insights/ai-guard/check/{device_id}", response_model=AiGuardResponse, include_in_schema=False
-)
-async def ai_guard_check_device(
-    device_id: int, service: DeviceServiceDep, container: ContainerDep, _: Viewer
-) -> AiGuardResponse:
-    from netops.services.ai_guard import AiTelemetryGuard  # noqa: PLC0415
-
-    device = service.get(device_id)
-    guard = AiTelemetryGuard(container.settings)
-    verdict = await asyncio.to_thread(guard.verify_execution, device)
-    return AiGuardResponse(
-        hostname=device.hostname,
-        healthy=verdict.healthy,
-        metric=verdict.metric,
-        observed_value=verdict.observed_value,
-        expected_range=verdict.expected_range,
-        deviation_pct=verdict.deviation_pct,
-        problem=verdict.problem,
-        message=verdict.message,
-        provider=verdict.provider,
-        injected_simulation=guard.get_injected_anomaly(device.hostname),
-    )
-
-
-@router.post(
-    "/ai-guard/simulate",
-    summary="Inject simulated operational anomaly (blackhole/storm) for demo",
-)
-@router.post("/insights/ai-guard/simulate", include_in_schema=False)
-async def ai_guard_simulate_anomaly(data: AiGuardSimulateRequest, _: Viewer) -> dict[str, str]:
-    from netops.services.ai_guard import AiTelemetryGuard  # noqa: PLC0415
-
-    AiTelemetryGuard.inject_anomaly(data.hostname, data.anomaly_type)
-    return {
-        "status": "ok",
-        "hostname": data.hostname,
-        "anomaly": data.anomaly_type,
-        "message": f"Simulated {data.anomaly_type} set on {data.hostname}",
-    }
-
-
-@router.get(
-    "/ai-guard/overview",
-    response_model=list[AiGuardResponse],
-    summary="AI Guard health overview across all network devices",
-)
-@router.get(
-    "/insights/ai-guard/overview", response_model=list[AiGuardResponse], include_in_schema=False
-)
-async def ai_guard_overview(
-    service: DeviceServiceDep, container: ContainerDep, _: Viewer
-) -> list[AiGuardResponse]:
-    from netops.services.ai_guard import AiTelemetryGuard  # noqa: PLC0415
-
-    devices = list(service.list_devices(limit=500))
-    guard = AiTelemetryGuard(container.settings)
-    results = []
-    for d in devices:
-        verdict = await asyncio.to_thread(guard.verify_execution, d)
-        results.append(
-            AiGuardResponse(
-                hostname=d.hostname,
-                healthy=verdict.healthy,
-                metric=verdict.metric,
-                observed_value=verdict.observed_value,
-                expected_range=verdict.expected_range,
-                deviation_pct=verdict.deviation_pct,
-                problem=verdict.problem,
-                message=verdict.message,
-                provider=verdict.provider,
-                injected_simulation=guard.get_injected_anomaly(d.hostname),
-            )
-        )
-    return results
+    bucket.append(now)
+    _RATE_LIMIT_BUCKETS[key] = bucket
 
 
 class FabricSummaryResponse(BaseModel):
@@ -543,15 +228,21 @@ class FabricSummaryResponse(BaseModel):
 async def get_fabric_summary(
     service: DeviceServiceDep,
     container: ContainerDep,
-    _: Viewer,
+    user: Viewer,
 ) -> FabricSummaryResponse:
-    from netops.enums import DeviceStatus  # noqa: PLC0415
+    from netops.enums import DeviceStatus
+    from netops.services.ai_guard import AiTelemetryGuard
 
-    devices = list(service.list_devices(limit=500))
+    devices = list_allowed_devices(service, user.allowed_system)
     total = len(devices)
     in_sync = sum(1 for d in devices if d.status == DeviceStatus.IN_SYNC)
     drift = sum(1 for d in devices if d.status == DeviceStatus.DRIFT_DETECTED)
     unreachable = sum(1 for d in devices if d.status == DeviceStatus.UNREACHABLE)
+
+    guard = AiTelemetryGuard(container.settings)
+    verdicts = await asyncio.to_thread(
+        lambda: [guard.verify_execution(d) for d in devices]
+    )
 
     alarms = []
     if drift > 0:
@@ -560,6 +251,9 @@ async def get_fabric_summary(
     if unreachable > 0:
         unreach_devs = [d.hostname for d in devices if d.status == DeviceStatus.UNREACHABLE]
         alarms.append(f"Недоступны по SSH: {', '.join(unreach_devs)}")
+    for d, v in zip(devices, verdicts, strict=True):
+        if not v.healthy and (v.problem or v.message):
+            alarms.append(f"AI Guard ({d.hostname}): {v.problem or v.message}")
 
     prompt = (
         f"Текущее состояние фабрики ЦОД:\n"
@@ -568,15 +262,12 @@ async def get_fabric_summary(
         f"- Обнаружен дрейф (DRIFT): {drift}\n"
         f"- Недоступны (UNREACHABLE): {unreachable}\n"
         f"Алерты: {'; '.join(alarms) if alarms else 'Нет'}\n\n"
-        f"Составь краткую сводку для дежурного инженера на русском (2-3 предложения), "
+        f"Составь краткую сводку для дежурного сетевого инженера на русском языке (2-3 предложения), "
         f"оцени операционный статус и дай рекомендацию."
     )
     res = await chat_with_llm(
         container.settings,
-        system_prompt=(
-            "Ты — главный сетевой архитектор платформы NetOps. "
-            "Отвечай кратко, чётко и профессионально."
-        ),
+        system_prompt="Ты — главный сетевой архитектор платформы NetOps. Отвечай кратко, чётко и профессионально.",
         user_prompt=prompt,
         timeout_floor=3.0,
     )
@@ -584,21 +275,17 @@ async def get_fabric_summary(
     if res:
         ai_summary, provider = res
     else:
-        if drift == 0 and unreachable == 0:
-            ai_summary = "Фабрика синхронизирована с Git-эталоном, расхождений не зафиксировано."
+        if drift == 0 and unreachable == 0 and not alarms:
+            ai_summary = "Фабрика полностью синхронизирована с Git-эталоном. Аномалий и расхождений не зафиксировано."
+        elif drift == 0 and unreachable == 0 and alarms:
+            ai_summary = f"Конфигурации синхронизированы, но зафиксирована аномалия телеметрии: {'; '.join(alarms)}."
         elif drift > 0:
-            ai_summary = (
-                f"Внимание: на {drift} устройствах есть несанкционированные правки. "
-                "Рекомендуется запустить устранение дрейфа."
-            )
+            ai_summary = f"Внимание: обнаружено {drift} устройств с несанкционированными правками. Рекомендуется запустить ремедиацию."
         else:
-            ai_summary = (
-                f"Внимание: {unreachable} узлов не отвечают по SSH. "
-                "Проверьте связность или перезапустите стенд."
-            )
+            ai_summary = f"Внимание: {unreachable} узлов не отвечают по SSH. Проверьте сетевую связность или перезапустите лабу."
         provider = "Deterministic Rule-Engine"
 
-    is_tg = bool(container.settings.telegram_bot_token and container.settings.telegram_chat_ids)
+    is_tg = bool(container.settings.telegram_bot_token and container.settings.telegram_chat_id)
     return FabricSummaryResponse(
         total_devices=total,
         in_sync_count=in_sync,
@@ -611,31 +298,54 @@ async def get_fabric_summary(
     )
 
 
-@router.post(
-    "/insights/telegram/broadcast",
-    summary="Broadcast AI network executive summary to Telegram chat",
-)
-async def broadcast_to_telegram(
-    service: DeviceServiceDep,
-    container: ContainerDep,
-    _: Viewer,
-) -> dict[str, Any]:
-    from netops.services.notifier import send_telegram_message  # noqa: PLC0415
+class HybridSearchHit(BaseModel):
+    device_id: int
+    hostname: str
+    management_ip: str
+    platform: str
+    role: str
+    status: str
+    rrf_score: float
+    lexical_score: float
+    semantic_score: float
+    lexical_rank: int
+    semantic_rank: int
+    match_reason: str
 
-    summary_data = await get_fabric_summary(service, container, _)
-    tg_text = (
-        "🌐 <b>[NetOps Platform] Оперативная сводка фабрики</b>\n\n"
-        f"📊 <b>Статус:</b> Всего {summary_data.total_devices} | "
-        f"🟢 Sync: {summary_data.in_sync_count} | "
-        f"🔴 Drift: {summary_data.drift_count} | "
-        f"⚪ Unreachable: {summary_data.unreachable_count}\n\n"
-        f"🧠 <b>AI Резюме:</b>\n{summary_data.ai_executive_summary}\n\n"
-        f"<i>Провайдер: {summary_data.ai_provider}</i>"
-    )
-    sent = send_telegram_message(container.settings, tg_text)
-    return {
-        "status": "ok" if sent else "skipped",
-        "delivered": sent,
-        "configured": summary_data.telegram_configured,
-        "message": "Broadcast sent to Telegram" if sent else "Telegram unconfigured or send failed",
-    }
+
+@router.get(
+    "/insights/search",
+    response_model=list[HybridSearchHit],
+    summary="Hybrid Search (Lexical + Semantic/Synonym RRF) across network devices",
+)
+@router.get("/search", response_model=list[HybridSearchHit], include_in_schema=False)
+async def hybrid_search_endpoint(
+    service: DeviceServiceDep,
+    user: Viewer,
+    q: str = Query(default="", max_length=200),
+    limit: int = Query(default=10, ge=1, le=50),
+) -> list[HybridSearchHit]:
+    devices = list_allowed_devices(service, user.allowed_system)
+    ranked = hybrid_rank_devices(q, devices)
+    if q.strip():
+        ranked = [r for r in ranked if r.rrf_score > 0]
+    return [
+        HybridSearchHit(
+            device_id=r.device.id,
+            hostname=r.device.hostname,
+            management_ip=str(r.device.management_ip),
+            platform=str(r.device.platform),
+            role=str(r.device.role),
+            status=str(r.device.status),
+            rrf_score=r.rrf_score,
+            lexical_score=r.lexical_score,
+            semantic_score=r.semantic_score,
+            lexical_rank=r.lexical_rank,
+            semantic_rank=r.semantic_rank,
+            match_reason=r.match_reason,
+        )
+        for r in ranked[:limit]
+    ]
+
+
+router.include_router(insights_copilot_router)

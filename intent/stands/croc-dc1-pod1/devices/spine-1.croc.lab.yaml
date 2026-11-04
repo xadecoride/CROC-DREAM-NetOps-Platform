@@ -1,0 +1,102 @@
+hostname: spine-1.croc.lab
+interfaces:
+- name: Loopback0
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Router-ID / BGP announce
+  ipv4_address: 10.255.0.11/32
+  ospf_area: '0'
+- name: GigabitEthernet2
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Downlink to leaf1 GE1/0/0
+  ipv4_address: 10.10.0.0/31
+  acl_in: FABRIC-IN
+  ospf_area: '0'
+- name: GigabitEthernet3
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Downlink to leaf2 GE1/0/0
+  ipv4_address: 10.10.0.2/31
+  acl_in: FABRIC-IN
+  ospf_area: '0'
+- name: GigabitEthernet4
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Downlink to leaf3 GigabitEthernet2
+  ipv4_address: 10.10.0.8/31
+  acl_in: FABRIC-IN
+  ospf_area: '0'
+- name: GigabitEthernet5
+  enabled: true
+  mode: l3
+  mtu: 1500
+  description: Downlink to leaf4 Ethernet1
+  ipv4_address: 10.10.0.14/31
+  acl_in: FABRIC-IN
+  ospf_area: '0'
+bgp:
+  asn: 65000
+  router_id: 10.255.0.11
+  neighbors:
+  - peer_ip: 10.10.0.1
+    remote_asn: 65001
+    description: leaf-1
+    announced_prefixes:
+    - 10.255.0.11/32
+  - peer_ip: 10.10.0.3
+    remote_asn: 65002
+    description: leaf-2
+    announced_prefixes:
+    - 10.255.0.11/32
+  - peer_ip: 10.10.0.9
+    remote_asn: 65003
+    description: leaf-3
+    announced_prefixes:
+    - 10.255.0.11/32
+  - peer_ip: 10.10.0.15
+    remote_asn: 65004
+    description: leaf-4
+    announced_prefixes:
+    - 10.255.0.11/32
+  evpn: true
+acls:
+- name: FABRIC-IN
+  rules:
+  - sequence: 10
+    action: permit
+    protocol: icmp
+    source: any
+    destination: any
+  - sequence: 15
+    action: permit
+    protocol: ospf
+    source: any
+    destination: any
+  - sequence: 20
+    action: permit
+    protocol: tcp
+    source: any
+    destination: any
+    dst_port: bgp
+  - sequence: 30
+    action: permit
+    protocol: tcp
+    source: any
+    destination: any
+    src_port: bgp
+  - sequence: 40
+    action: deny
+    protocol: tcp
+    source: any
+    destination: any
+    dst_port: telnet
+  - sequence: 50
+    action: permit
+    protocol: ip
+    source: any
+    destination: any

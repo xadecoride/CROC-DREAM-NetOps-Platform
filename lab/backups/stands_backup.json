@@ -1,0 +1,16 @@
+[
+  {
+    "slug": "croc-dc1-pod1",
+    "name": "Основной ЦОД (croc-dc1-pod1)",
+    "site": "croc-dc1-pod1",
+    "driver": "offline",
+    "jump_host": null,
+    "jump_port": 221,
+    "jump_user": "crocdream",
+    "port_map": {},
+    "topology_path": null,
+    "intent_subpath": null,
+    "status": "ONLINE",
+    "backed_up_at": "2026-10-21T23:20:39.157127+00:00"
+  }
+]

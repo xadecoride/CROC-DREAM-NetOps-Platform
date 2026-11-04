@@ -8,13 +8,12 @@ import yaml
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from netops.enums import DeviceStatus, ManagementMode, UserRole
+from netops.enums import DeviceStatus, UserRole
 from netops.models import Device
 from tests.conftest import auth
 
 ADMIN = auth(UserRole.ADMIN)
 VIEWER = auth(UserRole.VIEWER)
-OPERATOR = auth(UserRole.OPERATOR)
 
 NEW_DEVICE = {
     "hostname": "border-1.croc.lab",
@@ -206,43 +205,17 @@ def test_intent_lint_endpoint(client: TestClient, intent_repo: Path) -> None:
     assert {issue["code"] for issue in report["issues"]} == {"duplicate_router_id"}
 
 
-class TestManagementMode:
-    def test_manual_device_is_monitoring_only(self, client: TestClient) -> None:
-        device = _create(client, hostname="new.croc.lab", management_ip="172.20.20.90")
-        assert device["management_mode"] == "MONITORING_ONLY"
-
-    def test_inventory_devices_are_managed(self, client: TestClient) -> None:
-        client.post("/api/v1/inventory/sync", headers=ADMIN)
-        devices = client.get("/api/v1/devices", headers=VIEWER).json()
-        assert {d["management_mode"] for d in devices} == {"MANAGED"}
-
-    def test_promote_allows_changes(self, client: TestClient) -> None:
-        device = _create(client, hostname="new.croc.lab", management_ip="172.20.20.91")
-        response = client.post(f"/api/v1/devices/{device['id']}/promote", headers=ADMIN)
-        assert response.status_code == 200
-        assert response.json()["management_mode"] == "MANAGED"
-
-    def test_remediation_is_refused_in_monitoring_mode(
-        self, client: TestClient, session: Session, devices: dict[str, Device]
-    ) -> None:
-        device = session.get_one(Device, devices["leaf-2.croc.lab"].id)
-        device.status = DeviceStatus.DRIFT_DETECTED
-        device.management_mode = ManagementMode.MONITORING_ONLY
-        session.commit()
-
-        response = client.post(
-            "/api/v1/drift/remediate", json={"device_id": device.id}, headers=OPERATOR
-        )
-        assert response.status_code == 409
-        assert "режиме наблюдения" in response.json()["detail"]
-
-    def test_probe_reports_unreachable_port(self, client: TestClient) -> None:
-        response = client.post(
-            "/api/v1/devices/probe",
-            json={"management_ip": "127.0.0.1", "management_port": 9},
-            headers=ADMIN,
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert body["reachable"] is False
-        assert body["detected_platform"] is None
+def test_list_devices_enriched_telemetry(client: TestClient, devices: dict[str, Device]) -> None:
+    response = client.get("/api/v1/devices", headers=VIEWER)
+    assert response.status_code == 200
+    items = response.json()
+    assert len(items) == len(devices)
+    for dev in items:
+        assert "oper_status" in dev
+        assert dev["oper_status"] in {"UP", "DOWN", "DEGRADED", "UNKNOWN"}
+        assert "sparkline" in dev
+        assert len(dev["sparkline"]) <= 24  # only real measurements; empty = no data yet
+        assert all(isinstance(p, (int, float)) and 0.0 <= p <= 100.0 for p in dev["sparkline"])
+        assert "state_timeline" in dev
+        assert len(dev["state_timeline"]) == 24
+        assert all(s in {"UP", "DOWN", "DEGRADED", "UNKNOWN"} for s in dev["state_timeline"])

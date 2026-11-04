@@ -3,7 +3,6 @@
 interface Loopback0
    description Router-ID
    ip address {{ intent.bgp.router_id }}/32
-   ip ospf area 0.0.0.0
 {% endif %}
 {% for iface in intent.interfaces %}
 interface {{ iface.name }}
@@ -15,16 +14,25 @@ interface {{ iface.name }}
 {% endif %}
 {% if iface.mode == "l3" and not iface.name.startswith("Loopback") %}
    no switchport
+{% elif iface.mode == "l2" %}
+   switchport
+{% if iface.access_vlan %}
+   switchport access vlan {{ iface.access_vlan }}
+{% endif %}
 {% endif %}
 {% if iface.ipv4_address %}
    ip address {{ iface.ipv4_address.with_prefixlen }}
 {% endif %}
-{% if iface.name.lower().startswith("loopback") %}
-   ip ospf area 0.0.0.0
-{% elif iface.acl_in %}
+{% if not iface.name.lower().startswith("loopback") %}
+{% if iface.acl_in %}
    ip access-group {{ iface.acl_in }} in
+{% endif %}
+{% endif %}
+{% if iface.ospf_area is not none %}
+{% if not iface.name.lower().startswith("loopback") %}
    ip ospf network point-to-point
-   ip ospf area 0.0.0.0
+{% endif %}
+   ip ospf area {{ iface.ospf_area }}
 {% endif %}
 {% if not iface.enabled %}
    shutdown

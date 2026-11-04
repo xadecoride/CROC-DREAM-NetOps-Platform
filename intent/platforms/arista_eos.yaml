@@ -1,18 +1,25 @@
+# ==============================================================================
+# БЛОК 1: ИДЕНТИФИКАЦИЯ СТЕНДА И ВЕНДОРА (TCP / SSH / CLI ТРИГГЕРЫ)
+# ==============================================================================
 platform: arista_eos
 vendor: Arista Networks
-default_password: admin
+default_password: F5ga6jfkig2
 default_interface: Ethernet1
-offline_ports: [2212, 2001]
+offline_ports: [2212]
 offline_interfaces:
   - GigabitEthernet1
   - GigabitEthernet2
 ssh_banners:
-  - openssh
   - arista
   - eos
+  - ceos
 version_signatures:
   - Arista
   - cEOS
+
+# ==============================================================================
+# БЛОК 2: ИНСПЕКЦИЯ ТОПОЛОГИИ И КОНФИГУРАЦИИ (DISCOVERY & DRIFT ENGINE)
+# ==============================================================================
 interface_prefixes:
   - Ethernet
   - Loop
@@ -23,10 +30,59 @@ lldp_port_prefixes:
 commands:
   version: show version
   memory: show processes top once | include Mem
+  cpu: show processes top once | include Cpu
   running_config: show running-config
   hostname_filter: show running-config | include hostname
   interfaces_brief: show ip interface brief
   lldp_neighbors: show lldp neighbors
+  bgp_summary: show ip bgp summary
+
+# ==============================================================================
+# БЛОК 3: ТРИГГЕРЫ ПРОТОКОЛОВ ТЕЛЕМЕТРИИ И КАСКАД ПРИОРИТЕТОВ (CAPABILITIES)
+# ==============================================================================
+gnmi:
+  default_port: 6030
+  check_command: show management api gnmi
+  match_tokens:
+    - enabled
+    - active
+    - running
+    - "6030"
+    - grpc
+snmp:
+  base_port: 161
+  clab_offset: -600
+exporter:
+  port: 9100
+  path: /metrics
+protocol_priority:
+  - gnmi
+  - snmp
+  - ssh_cli
+
+# ==============================================================================
+# БЛОК 4: КАСТОМНЫЙ SSH CLI СБОРЩИК МЕТРИК (POOLED SSH FALLBACK ENGINE)
+# ==============================================================================
+telemetry:
+  cpu_pct:
+    command: show processes top once | include Cpu
+    parser: parse_arista_cpu
+  memory_pct:
+    command: show processes top once | include Mem
+    parser: parse_arista_memory
+  uplink_util_pct:
+    command: show interfaces counters rates
+    parser: max_arista_link_utilization
+  interface_errors_rate:
+    command: show interfaces counters errors
+    parser: parse_interface_errors
+  fdb_mac_count:
+    command: show mac address-table count
+    parser: parse_fdb_mac_count
+
+# ==============================================================================
+# БЛОК 5: АВАРИЙНОЕ УПРАВЛЕНИЕ (EMERGENCY HUB)
+# ==============================================================================
 emergency_commands:
   reset_bgp_sessions: clear ip bgp *
   rollback_last_commit: configure replace flash:rollback-0 force

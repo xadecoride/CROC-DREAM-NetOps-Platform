@@ -1,0 +1,87 @@
+# ==============================================================================
+# БЛОК 1: ИДЕНТИФИКАЦИЯ СТЕНДА И ВЕНДОРА (TCP / SSH / CLI ТРИГГЕРЫ)
+# ==============================================================================
+platform: juniper_junos
+vendor: Juniper Networks
+default_password: admin
+default_interface: ge-0/0/0
+offline_ports: [2251]
+offline_interfaces:
+  - ge-0/0/0
+  - ge-0/0/1
+ssh_banners:
+  - juniper
+  - junos
+version_signatures:
+  - JUNOS
+  - Juniper
+
+# ==============================================================================
+# БЛОК 2: ИНСПЕКЦИЯ ТОПОЛОГИИ И КОНФИГУРАЦИИ (DISCOVERY & DRIFT ENGINE)
+# ==============================================================================
+interface_prefixes:
+  - ge
+  - xe
+  - et
+  - lo
+  - fxp
+lldp_port_prefixes:
+  - ge
+  - xe
+  - et
+commands:
+  version: show version
+  memory: show chassis routing-engine | match Memory
+  cpu: show chassis routing-engine | match Idle
+  running_config: show configuration
+  hostname_filter: show configuration | match host-name
+  interfaces_brief: show interfaces terse
+  lldp_neighbors: show lldp neighbors
+  bgp_summary: show bgp summary
+
+# ==============================================================================
+# БЛОК 3: ТРИГГЕРЫ ПРОТОКОЛОВ ТЕЛЕМЕТРИИ И КАСКАД ПРИОРИТЕТОВ (CAPABILITIES)
+# ==============================================================================
+gnmi:
+  default_port: 32767
+  check_command: show system services | match grpc
+  match_tokens:
+    - enabled
+    - active
+    - running
+    - "32767"
+    - grpc
+snmp:
+  base_port: 161
+  clab_offset: -600
+exporter:
+  port: 9100
+  path: /metrics
+protocol_priority:
+  - gnmi
+  - snmp
+  - ssh_cli
+
+# ==============================================================================
+# БЛОК 4: КАСТОМНЫЙ SSH CLI СБОРЩИК МЕТРИК (POOLED SSH FALLBACK ENGINE)
+# ==============================================================================
+telemetry:
+  cpu_pct:
+    command: show chassis routing-engine | match Idle
+    parser: parse_juniper_cpu
+  memory_pct:
+    command: show chassis routing-engine | match Memory
+    parser: parse_juniper_memory
+  uplink_util_pct:
+    command: show interfaces extensive | match bps
+    parser: max_cisco_link_utilization
+
+# ==============================================================================
+# БЛОК 5: АВАРИЙНОЕ УПРАВЛЕНИЕ (EMERGENCY HUB)
+# ==============================================================================
+emergency_commands:
+  reset_bgp_sessions: clear bgp neighbor all
+  rollback_last_commit: rollback 1
+  restart_services: restart routing
+  reboot: request system reboot
+  default: show version

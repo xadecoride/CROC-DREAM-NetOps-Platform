@@ -58,13 +58,13 @@ SYSTEM_PROMPT = (
 
 
 def _check_bgp_risk(text: str) -> tuple[RiskLevel | None, list[str], list[str]]:
-    if "router bgp" not in text and "neighbor" not in text:
+    if not any(k in text for k in ("router bgp", "neighbor", "bgp ", "peer ")):
         return None, [], []
-    if "remote-as" in text or "password" in text or "shutdown" in text:
+    if any(k in text for k in ("remote-as", "as-number", "password", "shutdown", "undo peer")):
         return (
             "HIGH",
-            ["Модификация параметров BGP пиринга (remote-as / password / shutdown)."],
-            ["Проверьте состояние BGP сессий (show ip bgp summary) сразу после наката."],
+            ["Модификация параметров BGP пиринга (remote-as / as-number / password / shutdown)."],
+            ["Проверьте состояние BGP сессий (show ip bgp summary / display bgp peer) сразу после наката."],
         )
     return (
         "MEDIUM",
@@ -74,19 +74,24 @@ def _check_bgp_risk(text: str) -> tuple[RiskLevel | None, list[str], list[str]]:
 
 
 def _check_acl_risk(text: str) -> tuple[RiskLevel | None, list[str], list[str]]:
-    if "access-list" not in text and "ip access-group" not in text:
+    if not any(
+        k in text for k in ("access-list", "ip access-group", "acl name", "traffic-filter", "rule ")
+    ):
         return None, [], []
-    if "deny" in text or "permit ip any any" in text:
+    if any(k in text for k in ("deny", "permit ip any any", "undo rule", "no rule", "10.99.0.0")):
         return (
             "HIGH",
-            ["Изменение списков контроля доступа (ACL) с правилами фильтрации."],
-            ["Проверьте доступность управляющего IP-адреса перед подтверждением."],
+            ["Изменение списков контроля доступа (ACL) с правилами фильтрации трафика."],
+            ["Проверьте доступность управляющего IP-адреса и BGP-сессий перед подтверждением."],
         )
     return "MEDIUM", ["Добавление или корректировка правил ACL."], []
 
 
 def _check_interface_risk(text: str) -> tuple[RiskLevel | None, list[str], list[str]]:
-    if "shutdown" in text and "no shutdown" not in text:
+    has_standalone_shutdown = any(
+        re.search(r"(?<!no\s)(?<!undo\s)\bshutdown\b", ln) for ln in text.splitlines()
+    )
+    if has_standalone_shutdown:
         return (
             "CRITICAL",
             ["Команда shutdown переводит сетевой интерфейс в состояние down."],
@@ -165,54 +170,182 @@ def _sync_http_request(
     )
     req = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
     with opener.open(req, timeout=timeout) as response:
-        body: bytes = response.read()
-    return body.decode("utf-8")
+        return response.read().decode("utf-8")
+
+
+def normalize_llm_cascade_item(item: dict[str, Any], idx: int = 0) -> dict[str, Any]:
+    """Auto-resolve base_url, model, api_key, and name for any custom LLM cascade item."""
+    raw_name = str(item.get("name") or "").strip()
+    raw_url = str(item.get("base_url") or "").strip()
+    raw_model = str(item.get("model") or "").strip()
+    raw_key = str(item.get("api_key") or item.get("token") or "").strip()
+    hint_nu = f"{raw_name} {raw_url}".lower()
+    hint_num = f"{hint_nu} {raw_model}".lower()
+
+    if raw_key.startswith("gsk_") or "groq" in hint_nu:
+        def_title, def_url, def_model, def_key = (
+            "Groq",
+            "https://api.groq.com/openai/v1",
+            "qwen/qwen3.8-27b",
+            raw_key,
+        )
+    elif raw_key.startswith("AIza") or "gemini" in hint_nu or "google" in hint_nu:
+        def_title, def_url, def_model, def_key = (
+            "Google-Gemini",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-2.5-flash",
+            raw_key,
+        )
+    elif raw_key.startswith("sk-or-") or "openrouter" in hint_nu:
+        def_title, def_url, def_model, def_key = (
+            "OpenRouter",
+            "https://openrouter.ai/api/v1",
+            "deepseek/deepseek-chat-v3-0324:free",
+            raw_key,
+        )
+    elif "deepseek" in hint_num:
+        def_title, def_url, def_model, def_key = (
+            "DeepSeek",
+            "https://api.deepseek.com/v1",
+            "deepseek-chat",
+            raw_key,
+        )
+    elif "ollama" in hint_nu or "11434" in hint_nu or "local" in hint_nu:
+        def_title, def_url, def_model, def_key = (
+            "Local-Ollama",
+            "http://127.0.0.1:11434/v1",
+            "qwen2.5:7b",
+            raw_key or "ollama",
+        )
+    elif "openai" in hint_num or "gpt" in hint_num:
+        def_title, def_url, def_model, def_key = (
+            "OpenAI",
+            "https://api.openai.com/v1",
+            "gpt-4o-mini",
+            raw_key,
+        )
+    else:
+        def_title, def_url, def_model, def_key = (
+            f"Provider-{idx + 1}",
+            "",
+            "",
+            raw_key,
+        )
+
+    try:
+        timeout = float(item.get("timeout_seconds") or 2.5)
+    except (TypeError, ValueError):
+        timeout = 2.5
+
+    return {
+        "name": raw_name or def_title,
+        "base_url": raw_url or def_url,
+        "model": raw_model or def_model,
+        "api_key": def_key,
+        "timeout_seconds": timeout,
+    }
 
 
 def _llm_candidates(settings: Settings) -> list[tuple[str, str, str, str, float]]:
     """Configured providers in cascade order: (name, base_url, token, model, timeout)."""
+    if "PYTEST_CURRENT_TEST" not in os.environ or "offline_lab_path" in settings.model_fields_set:
+        settings.apply_runtime_overlay()
     candidates: list[tuple[str, str, str, str, float]] = []
-    if settings.ollama_url:
-        candidates.append(
-            (
-                "Local-Ollama",
-                settings.ollama_url,
-                "ollama",
-                settings.ollama_model,
-                settings.ollama_timeout_seconds,
-            )
-        )
-    if settings.groq_api_key:
-        candidates.append(
-            (
-                "Groq",
-                settings.groq_base_url,
-                settings.groq_api_key.get_secret_value(),
-                settings.groq_model,
-                max(settings.groq_timeout_seconds, 3.0),
-            )
-        )
-    if settings.gemini_api_key:
-        candidates.append(
-            (
-                "Google-Gemini",
-                settings.gemini_base_url,
-                settings.gemini_api_key.get_secret_value(),
-                settings.gemini_model,
-                max(settings.gemini_timeout_seconds, 10.0),
-            )
-        )
-    if settings.llm_api_key:
-        candidates.append(
-            (
-                "Team-MiMo",
-                settings.llm_base_url,
-                settings.llm_api_key.get_secret_value(),
-                settings.llm_model,
-                settings.llm_timeout_seconds,
-            )
-        )
+    seen_urls: set[str] = set()
+    for idx, entry in enumerate(getattr(settings, "llm_cascade", None) or []):
+        if not isinstance(entry, dict):
+            continue
+        norm = normalize_llm_cascade_item(entry, idx)
+        base_url = norm["base_url"]
+        model_name = norm["model"]
+        api_key = norm["api_key"] or "ollama"
+        name = norm["name"]
+        timeout = float(norm["timeout_seconds"])
+        if not base_url or not model_name:
+            continue
+        candidates.append((name, base_url, api_key, model_name, max(timeout, 1.0)))
+        seen_urls.add(f"{base_url}:{model_name}")
+
+    if settings.ollama_url and f"{settings.ollama_url}:{settings.ollama_model}" not in seen_urls:
+        candidates.append((
+            "Local-Ollama",
+            settings.ollama_url,
+            "ollama",
+            settings.ollama_model,
+            settings.ollama_timeout_seconds,
+        ))
+    if settings.groq_api_key and f"{settings.groq_base_url}:{settings.groq_model}" not in seen_urls:
+        candidates.append((
+            "Groq",
+            settings.groq_base_url,
+            settings.groq_api_key.get_secret_value(),
+            settings.groq_model,
+            max(settings.groq_timeout_seconds, 3.0),
+        ))
+    if settings.gemini_api_key and f"{settings.gemini_base_url}:{settings.gemini_model}" not in seen_urls:
+        candidates.append((
+            "Google-Gemini",
+            settings.gemini_base_url,
+            settings.gemini_api_key.get_secret_value(),
+            settings.gemini_model,
+            max(settings.gemini_timeout_seconds, 10.0),
+        ))
+    if settings.llm_api_key and f"{settings.llm_base_url}:{settings.llm_model}" not in seen_urls:
+        candidates.append((
+            "Team-MiMo",
+            settings.llm_base_url,
+            settings.llm_api_key.get_secret_value(),
+            settings.llm_model,
+            settings.llm_timeout_seconds,
+        ))
     return candidates
+
+
+_RISK_ORDER: dict[str, int] = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
+
+_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"\b(password(?:\s+cipher|\s+simple|\s+\d+)?|"
+            r"(?:enable|username\s+\S+(?:\s+privilege\s+\d+)?)\s+secret(?:\s+\d+)?|"
+            r"snmp-server\s+community|snmp-agent\s+community(?:\s+read|\s+write)?|"
+            r"(?:tacacs-server|radius-server|ntp\s+authentication-key)\s+key)\s+\S+",
+            re.IGNORECASE,
+        ),
+        r"\1 [REDACTED]",
+    ),
+    (
+        re.compile(
+            r"\b(gsk_[A-Za-z0-9]{16,}|ghp_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|"
+            r"AIza[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{16,}|crk_[A-Za-z0-9_-]{10,}|"
+            r"inv_[A-Za-z0-9_-]{10,}|wst_[A-Za-z0-9_-]{10,})\b"
+        ),
+        "[REDACTED_TOKEN]",
+    ),
+)
+
+_INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"ignore\s+(?:all\s+|any\s+)?(?:previous|prior|above)\s+instructions?", re.IGNORECASE),
+    re.compile(r"игнорируй(?:те)?\s+(?:все\s+)?(?:предыдущие|системные)\s+инструкции", re.IGNORECASE),
+    re.compile(r"(?:^|\n)\s*ACTION\s*:", re.IGNORECASE),
+)
+
+
+def sanitize_for_llm(text: str) -> str:
+    """Redact credentials/tokens and neutralize prompt-injection markers before LLM calls."""
+    if not text:
+        return ""
+    cleaned = text
+    for pat, repl in _SECRET_PATTERNS:
+        cleaned = pat.sub(repl, cleaned)
+    for pat in _INJECTION_PATTERNS:
+        cleaned = pat.sub("[FILTERED_DIRECTIVE]", cleaned)
+    return cleaned
+
+
+def _max_risk_level(a: str, b: RiskLevel) -> RiskLevel:
+    norm_a: RiskLevel = a if a in _RISK_ORDER else "MEDIUM"  # type: ignore[assignment]
+    return norm_a if _RISK_ORDER[norm_a] >= _RISK_ORDER[b] else b
 
 
 async def chat_with_llm(
@@ -222,13 +355,14 @@ async def chat_with_llm(
 
     Chat answers are bounded by `timeout_floor` (default 10.0s) to guarantee response.
     """
+    safe_user_prompt = sanitize_for_llm(user_prompt)
     for name, base_url, token, model_name, timeout in _llm_candidates(settings):
         try:
             payload = {
                 "model": model_name,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
+                    {"role": "user", "content": safe_user_prompt},
                 ],
                 "temperature": 0.3,
             }
@@ -259,24 +393,27 @@ async def explain_change_with_llm(
     rollback_patch: str,
 ) -> RiskExplanation:
     """Analyze remediation patch using multi-provider cascade with fast failover."""
+    heuristic = analyze_diff_heuristic(hostname, platform, remediation_patch, rollback_patch)
     if not remediation_patch.strip():
         logger.info("Patch empty; using deterministic rule-engine.")
-        return analyze_diff_heuristic(hostname, platform, remediation_patch, rollback_patch)
+        return heuristic
 
     candidates = _llm_candidates(settings)
     if not candidates:
         logger.info("No LLM API tokens configured; using deterministic rule-engine fallback.")
-        return analyze_diff_heuristic(hostname, platform, remediation_patch, rollback_patch)
+        return heuristic
 
+    safe_rem = sanitize_for_llm(remediation_patch)
+    safe_rb = sanitize_for_llm(rollback_patch)
     user_prompt = f"""Проанализируй следующий конфигурационный патч:
 Устройство: {hostname}
 Платформа: {platform}
 
 === HierConfig Remediation Patch (что будет применено) ===
-{remediation_patch}
+{safe_rem}
 
 === Rollback Patch (обратный откат в случае сбоя) ===
-{rollback_patch}
+{safe_rb}
 """
 
     for prov_name, base_url, token, model_name, timeout in candidates:
@@ -306,15 +443,26 @@ async def explain_change_with_llm(
             )
             data = json.loads(raw_text)
             raw_content = data["choices"][0]["message"]["content"]
-            match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_content, re.DOTALL)
+            match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw_content, re.DOTALL)
             clean_json = match.group(1) if match else raw_content.strip()
             parsed = json.loads(clean_json)
+            raw_level = str(parsed.get("risk_level", "MEDIUM")).upper()
+            final_level = _max_risk_level(raw_level, heuristic.risk_level)
+            final_safe = (
+                bool(parsed.get("is_safe", False))
+                and heuristic.is_safe
+                and final_level == "LOW"
+            )
+            llm_points = list(parsed.get("key_points") or [])
+            for hp in heuristic.key_points:
+                if hp not in llm_points:
+                    llm_points.append(hp)
             return RiskExplanation(
-                risk_level=parsed.get("risk_level", "MEDIUM"),
-                summary=parsed.get("summary", ""),
-                key_points=parsed.get("key_points", []),
-                recommendations=parsed.get("recommendations", []),
-                is_safe=parsed.get("is_safe", False),
+                risk_level=final_level,
+                summary=parsed.get("summary") or heuristic.summary,
+                key_points=llm_points,
+                recommendations=list(parsed.get("recommendations") or heuristic.recommendations),
+                is_safe=final_safe,
                 provider=f"{prov_name} ({model_name})",
             )
         except Exception as exc:
@@ -328,6 +476,6 @@ async def explain_change_with_llm(
             )
 
     logger.warning("All LLM providers in cascade failed; using deterministic rule-engine.")
-    fallback = analyze_diff_heuristic(hostname, platform, remediation_patch, rollback_patch)
-    fallback.provider = "Deterministic Rule-Engine (Cascade Failover)"
-    return fallback
+    heuristic.provider = "Deterministic Rule-Engine (Cascade Failover)"
+    return heuristic
+

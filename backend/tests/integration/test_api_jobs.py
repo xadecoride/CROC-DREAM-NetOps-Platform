@@ -302,3 +302,39 @@ class TestIncrementalLogs:
     def test_unknown_job(self, client: TestClient) -> None:
         response = client.get(f"/api/v1/jobs/{uuid.uuid4()}/logs", headers=VIEWER)
         assert response.status_code == 404
+
+    def test_sse_stream_once_and_after_id(
+        self, client: TestClient, devices: dict[str, Device], run_job: RunJob
+    ) -> None:
+        from netops.services.state import get_state_manager
+
+        job_id = _dry_run(client, devices["spine-1.croc.lab"].id)
+        pending_stream = client.get(
+            f"/api/v1/jobs/{job_id}/stream", params={"once": "true"}, headers=VIEWER
+        )
+        assert pending_stream.status_code == 200
+        assert "text/event-stream" in pending_stream.headers["content-type"]
+        assert "event: status" in pending_stream.text
+        assert '"status": "PENDING"' in pending_stream.text
+
+        assert run_job(job_id) is JobStatus.SUCCESS
+        buf = get_state_manager().get_json(f"netops:job_stream:{job_id}")
+        assert isinstance(buf, list) and len(buf) >= 2
+
+        done_stream = client.get(
+            f"/api/v1/jobs/{job_id}/stream", params={"once": "true"}, headers=VIEWER
+        )
+        assert done_stream.status_code == 200
+        assert "DRY_RUN job started" in done_stream.text
+        assert "event: done" in done_stream.text
+
+        after_stream = client.get(
+            f"/api/v1/jobs/{job_id}/stream",
+            params={"once": "true", "after_id": buf[0]["id"]},
+            headers=VIEWER,
+        )
+        assert after_stream.status_code == 200
+        assert "DRY_RUN job started" not in after_stream.text
+        assert "Job finished successfully" in after_stream.text
+        assert "event: status" in after_stream.text
+        assert "event: done" in after_stream.text
