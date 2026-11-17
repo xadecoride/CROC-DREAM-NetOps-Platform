@@ -1,355 +1,186 @@
+[English](README.md) | [Русский](README.ru.md)
+
 # CROC DREAM NetOps Platform
 
-Платформа централизованного управления конфигурациями сетевой инфраструктуры. Инженер описывает намерение в YAML, платформа считает минимальный патч до вендорского синтаксиса, показывает его оператору, применяет транзакционно с автоматическим откатом и постоянно сверяет реальные конфигурации с эталоном.
+A team hackathon prototype for network configuration management: YAML intent validation, vendor-specific rendering, configuration diffs, manually approved deployment and drift monitoring.
 
-**Команда:** CROC DREAM
-**Назначение:** хакатон CROC DREAM, этап очных защит
+**1st Place — CROC “NetOps Platform” Case** · «Телеком Будущее», 2026.
 
----
+The **CROC DREAM** team had five participants. Daniil Kalinin ([@xadecoride](https://github.com/xadecoride)) was Tech Lead: architecture, task coordination, PR review and shared CI/CD work with the backend developer. The implementation was a team effort; this repository does not represent sole authorship.
 
-## Содержание
+## Scope and status
 
-1. [Статус проекта](#1-статус-проекта)
-2. [Поддерживаемые вендоры](#2-поддерживаемые-вендоры)
-3. [Архитектура](#3-архитектура)
-4. [Структура репозитория](#4-структура-репозитория)
-5. [Лабораторные стенды](#5-лабораторные-стенды)
-6. [Быстрый старт](#6-быстрый-старт)
-7. [Демонстрационный сценарий](#7-демонстрационный-сценарий)
-8. [API](#8-api)
-9. [Безопасность и доступ](#9-безопасность-и-доступ)
-10. [Тесты и CI](#10-тесты-и-ci)
-11. [Известные ограничения](#11-известные-ограничения)
-12. [Планирование работ](#12-планирование-работ)
-13. [Документация](#13-документация)
+The source contains a planning/deployment pipeline, persisted jobs and snapshots, an offline driver, a live SSH driver, role checks, a React operator interface and scheduled drift tasks. The offline mode is a reproducible file-based lab, not a simulation of every property of a real network OS.
 
----
+Live-driver code is present, but end-to-end device transactions and vendor-specific health checks require further validation. This is not a claim of production readiness, full six-vendor support or atomic changes across an entire fabric.
 
-## 1. Статус проекта
+## Configuration pipeline
 
-Состояние к текущему моменту, проверено запуском команд из раздела 10.
+Git/YAML intent → pre-flight lint → Jinja2 render → running-config normalization → hier_config diff (remediation + rollback) → manual approval → transactional apply → post-check → scheduled drift monitoring (Celery Beat)
 
-| Слой | Состояние |
-|---|---|
-| Линтеры и типы (ruff, black, mypy strict) | Зеленые |
-| Фронтенд (oxlint, tsc, vite build) | Зеленые |
-| Тесты бэкенда | 329 из 356 пройдено, покрытие 77% |
-| Docker Compose | Стек собирается и поднимается, есть smoke-тест в CI |
-| Живой стенд | Драйвер SSH реализован, сессии не подтверждены на реальном стенде |
+1. Load inventory and device intent from a checked-out YAML repository; validate schemas and references.
+2. Render device configuration with Jinja2 and collect the current running configuration.
+3. Normalize configuration text and apply diff filters before calculating remediation and rollback through hier_config.
+4. Store the plan, normalized snapshots and a hash of the collected running configuration.
+5. Require an operator-approved plan for deployment. Recollect running configuration and reject a stale plan if its hash changed.
+6. Apply, post-check and confirm or roll back **per device**. Rollout is sequential and stops after a failure; already confirmed devices are not proven to participate in a fabric-wide atomic rollback.
+7. In the Compose deployment, Celery Beat schedules drift scans; the worker compares running configuration with the rendered intent.
 
-**Что сделано и работает:**
+Git provides the history of intent changes. A mounted checkout supplies the files; this is not a claim of an automatic Git webhook/reconciliation controller.
 
-- Транзакционный деплой с транзакционными сессиями на Cisco IOS-XE, Arista EOS и Huawei VRP.
-- Расчёт патча и команд отката через hier_config для тех же трёх платформ.
-- Фоновые задачи на Celery, регулярный скан дрейфа по расписанию Beat.
-- RBAC с ролями viewer, operator, admin. Токены пользователей в базе, пароли не хранятся.
-- Телеметрия в Prometheus, снапшоты состояния, прогноз загрузки, ИИ-ассистент с резервным режимом на правилах.
-- Telegram-бот с оповещениями о смене состояния дрейфа и падении задач.
-- Аварийный контур: консоль только на чтение, журнал действий в базе, отказ произвольных патчей.
-
-**Что требует внимания до защиты:**
-
-| Приоритет | Проблема |
-|---|---|
-| P0 | Шаблоны Jinja2 перестали быть intent-ориентированными. Правка YAML не меняет рендер. Подробности в разделе 11 |
-| P0 | Шаблоны Huawei падают с ошибкой `hostname is undefined`. Устройства Huawei не проходят dry-run |
-| P1 | Grafana не подключён. В Compose есть только Prometheus |
-| P1 | Нет шаблонов для Eltex ESR. Платформа заведена в коде, но не рендерится |
-| P1 | Транзакции Huawei не подтверждены на живом CE12800 |
-
----
-
-## 2. Поддерживаемые вендоры
-
-В коде заведены четыре платформы. Фактическая глубина поддержки по каждой приведена ниже.
-
-| Платформа | Роль в стенде | Шаблоны | Диалект hier_config | Транзакция | Драйвер SSH | Интерфейсы в post-check |
-|---|---|---|---|---|---|---|
-| `cisco_iosxe` | spine, leaf | Есть | `CISCO_IOS` | `commit confirmed` | Ядро Scrapli | Есть |
-| `arista_eos` | spine | Есть | `ARISTA_EOS` | `configure session` + `commit timer` | Ядро Scrapli | Есть |
-| `huawei_vrp` | leaf | Есть, сломаны | `HUAWEI_VRP` | Двухэтапный `commit` с откатом на `commit-id` | `scrapli-community` | Нет |
-| `eltex_esr` | нет в стенде | Нет | `GENERIC` | Нет | `scrapli-community` | Нет |
-
-Пояснения к таблице:
-
-- **Транзакция.** Cisco и Arista применяют конфигурацию через подтверждаемую сессию, платформа отправляет commit только после успешных проверок. У Huawei нет таймера подтверждения, поэтому точка отката снимается заранее командой `display configuration commit list`, а откат выполняется через `rollback configuration to commit-id`. У Eltex транзакции нет: `apply` возвращает ошибку с объяснением, потому что без commit и rollback откат не гарантирован.
-- **Интерфейсы в post-check.** Health-проба разбирает `show ip interface brief` для Cisco и Arista. Для Huawei и Eltex ветки разбора нет, состояние портов в проверке не участвует, проверяются только BGP и ICMP.
-- **Команда BGP.** Health-проба использует `show ip bgp summary` для всех платформ, включая Huawei и Eltex.
-- **Сбор метрик.** Парсеры CLI есть для Cisco, Arista и Huawei. Для Eltex их нет.
-
-Российский вендор в текущем коде представлен платформой `eltex_esr`: диалект в фильтрах диффа, платформа в scrapli-community, определение платформы по баннеру SSH. Ноды Eltex в стенде нет, шаблонов нет, транзакции нет.
-
-Целевой scope отбора, шесть вендоров, сейчас не закрыт: реализовано четыре платформы, из них полноценно три.
-
----
-
-## 3. Архитектура
-
-### 3.1. Сквозной поток
+## Architecture and stack
 
 ```text
-Git / YAML intent
-  -> pre-flight lint
-  -> render (Jinja2)
-  -> collect running-config
-  -> normalize
-  -> diff (hier_config): remediation + rollback
-  -> manual approval
-  -> transactional apply
-  -> post-check
-  -> commit или откат
-  -> drift monitoring
+React / Monaco operator UI
+  -> FastAPI: devices, inventory, plans, jobs and drift reports
+  -> PostgreSQL: devices, jobs, plans, snapshots and audit data
+  -> Celery worker / Redis broker
+       -> intent lint -> Jinja2 -> normalization -> hier_config
+       -> offline files OR Scrapli / Paramiko SSH driver
+       -> post-check -> confirm / rollback
+
+Celery Beat -> scheduled drift and telemetry tasks
+Prometheus / SNMP exporter -> lab monitoring
+Telegram bot -> notifications and status commands (optional credentials)
 ```
 
-### 3.2. Принципы
-
-- **Источник истины в Git.** Инженер правит YAML, история изменений хранится в коммитах.
-- **Абстракция над вендорами.** Jinja2 превращает модель устройства в команды конкретной операционной системы. Логика протоколов не зависит от синтаксиса.
-- **Иерархический дифф.** hier_config считает минимальный патч и зеркальный набор команд отката.
-- **Транзакционная раскатка.** Изменение применяется только после подтверждения оператора и проверок состояния, при сбое выполняется откат.
-- **Непрерывный комплаенс.** Celery Beat запускает скан дрейфа по расписанию и проставляет статус комплаенса.
-
-### 3.3. Стек
-
-| Уровень | Выбор |
+| Layer | Technology |
 |---|---|
-| Источник истины | Git и YAML |
-| Генерация конфигураций | Jinja2, Pydantic, hier_config |
-| Доступ к устройствам | Scrapli, scrapli-community, paramiko как запасной путь |
-| Backend | FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL |
-| Фоновые задачи | Celery и Redis |
-| Фронтенд | React 19, Vite, Tailwind CSS 4, Monaco Editor |
-| Стенд | Containerlab, файловая эмуляция для разработки и CI |
-| Мониторинг | Prometheus, snmp-exporter |
+| Backend | Python 3.11+, FastAPI, Pydantic, SQLAlchemy 2, Alembic, PostgreSQL 16 |
+| Background work | Celery, Redis 7, Celery Beat |
+| Configuration | Git/YAML, Jinja2, hier_config |
+| Device access | Scrapli, scrapli-community, Paramiko; live dependencies are an optional `scrapli` extra |
+| Frontend | React 19, TypeScript, Vite, Tailwind CSS 4, Monaco Editor |
+| Labs and monitoring | Containerlab, Docker Compose, Prometheus, SNMP exporter, Telegram bot |
 
-Nornir в зависимостях отсутствует. Параллельный сбор конфигураций реализован собственным пулом потоков в драйвере.
+The standalone launcher uses SQLite and an in-process threaded dispatcher instead of PostgreSQL/Celery. Grafana is not included in the checked-in Compose stack. Nornir is not a project dependency.
 
----
+## Quick start
 
-## 4. Структура репозитория
+### Standalone development: offline files
 
-```text
-backend/          FastAPI, Celery, движок диффа и дрейфа, драйверы, миграции
-frontend/         Панель на React и Vite, статическая сборка раздаётся nginx
-intent/           Инвентарь и намерения офлайн-стенда, 4 устройства
-intent-live/      Инвентарь и намерения живого стенда, 6 устройств
-templates/        Шаблоны Jinja2 по платформам
-lab/              Манифест Containerlab, эталонные конфиги, снимки running-config, сброс стенда
-monitoring/       Конфигурация Prometheus, правила алертов, SNMP
-docs/             Архитектура, руководство по живому стенду, подключение шаблонов
-scripts/          Диагностика, проверка стенда, автоматизация, сброс
-```
-
----
-
-## 5. Лабораторные стенды
-
-Проект работает с тремя разными стендами. Переключение между ними это выбор инвентаря и драйвера, код при этом не меняется.
-
-### 5.1. Файловая эмуляция (по умолчанию)
-
-Режим для разработки, CI и воспроизводимой демонстрации. Устройства не требуют Docker.
-
-- Инвентарь: `intent/inventory.yaml`, четыре устройства.
-- Состояние устройств: `lab/running/<hostname>.cfg`.
-- Драйвер: `NETOPS_NETWORK_DRIVER=offline`.
-- Транзакции эмулируются: `apply` готовит конфигурацию, `confirm` записывает файл, `rollback` отменяет подготовку.
-- Post-check синтезируется из ожиданий intent: BGP Established, порты up/up или administratively down, потери 0%.
-
-Состав: `spine-1` Cisco IOS-XE, `spine-2` Arista EOS, `leaf-1` и `leaf-2` Huawei VRP.
-
-### 5.2. Локальный Containerlab
-
-Манифест `lab/fabric.clab.yaml`, шесть узлов.
-
-| Узел | Вендор и ОС | Роль |
-|---|---|---|
-| `spine1` | Cisco C8000V, IOS-XE 17.03.08a | spine |
-| `spine2` | Arista cEOS 4.32.0F | spine |
-| `leaf1` | Huawei CE12800, VRP 8.180 | leaf |
-| `leaf2` | Huawei CE12800, VRP 8.180 | leaf |
-| `host-a` | Alpine | сервер за leaf1 |
-| `host-b` | Alpine | сервер за leaf2 |
-
-Топология: двухуровневая CLOS-фабрика на eBGP, четыре линка между слоями. Сеть управления `clab_mgmt`, `172.20.20.0/24`. SSH-порты нод проброшены на хост: 2211, 2212, 2221, 2222.
-
-Сброс стенда: `lab/reset_lab.sh`. Эталонные конфиги лежат в `lab/golden_configs/`.
-
-### 5.3. Живой стенд
-
-Отдельный bare metal сервер, шесть узлов, три вендора.
-
-| Роль | Узлы | Вендор и ОС | Внешний порт SSH |
-|---|---|---|---|
-| spine | `spine-1`, `spine-2` | Arista cEOS 4.32.0F | 2211, 2212 |
-| leaf | `leaf-1`, `leaf-2` | Cisco C8000V 17.03.08a | 2221, 2222 |
-| leaf | `leaf-3`, `leaf-4` | Huawei CE12800 8.180 | 2231, 2232 |
-
-Инвентарь: `intent-live/`. Драйвер: Scrapli с `scrapli-community` для Huawei и Eltex.
-
-Подробное руководство с картой портов, разбором причин сбоя загрузки Cisco и процедурой перезапуска: `docs/live-lab.md`.
-
----
-
-## 6. Быстрый старт
-
-### 6.1. Локально без Docker
-
-Подходит для разработки и демонстрации. Поднимает SQLite и потоковый диспетчер вместо Celery, внешние сервисы не нужны.
+Requirements: Python 3.11+, [uv](https://docs.astral.sh/uv/), Node.js 22.12+ and npm.
 
 ```bash
-cd backend
+git clone https://github.com/xadecoride/CROC-DREAM-NetOps-Platform.git
+cd CROC-DREAM-NetOps-Platform/backend
+uv sync --locked
 uv run python run_local.py
-# API: http://127.0.0.1:8000
-# Swagger: http://127.0.0.1:8000/docs
 ```
+
+In another terminal, from the repository root:
 
 ```bash
 cd frontend
 npm ci
 npm run dev
-# Интерфейс: http://localhost:5173
 ```
 
-Проверка готовности:
+- UI: http://localhost:5173
+- API documentation: http://127.0.0.1:8000/docs
+- Health/readiness: `/healthz`, `/readyz`
 
-```bash
-curl -s http://127.0.0.1:8000/healthz   # {"status":"ok"}
-curl -s http://127.0.0.1:8000/readyz    # готовность базы и миграций
-```
+The launcher initializes SQLite, imports inventory and uses `lab/running/` for device state. It contains development API tokens and lab credential placeholders. Keep it local. It does **not** start Celery Beat, so this mode must not be presented as verification of scheduled drift monitoring.
 
-Снимки в `lab/running/` отслеживаются git. После демонстрации вернуть их в исходное состояние:
+### Docker Compose: offline pipeline with background tasks
 
-```bash
-git checkout -- lab/running
-```
-
-### 6.2. Docker Compose
+From the repository root, with Docker Compose v2.24+:
 
 ```bash
 cp backend/.env.example backend/.env
+# Review API tokens, SSH profiles and published ports locally.
+docker compose config --quiet
 docker compose up --build -d
+docker compose ps
 ```
 
-Поднимаются: `postgres`, `redis`, `api`, `worker`, `beat`, `telegram-bot`, `snmp-exporter`, `prometheus`, `frontend`.
+Services: PostgreSQL, Redis, API, worker, Beat, Telegram bot, Prometheus, SNMP exporter and frontend. The API applies Alembic migrations on startup; worker/Beat wait for API readiness. The bot remains idle without its configured credentials.
 
-- Интерфейс: http://localhost:5173
-- API и Swagger: http://localhost:8000/docs
-- Prometheus: http://localhost:9090
-
-Grafana в стек не входит.
-
-При старте API применяет миграции Alembic и поднимает health-эндпоинты. Воркер и Beat стартуют после того, как API станет healthy.
-
-### 6.3. Живой стенд
-
-На машине со стендом:
+| Service | Default address |
+|---|---|
+| UI | http://localhost:5173 |
+| API documentation | http://localhost:8000/docs |
+| Prometheus | http://localhost:9090 |
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.lab.yml up -d --build
+docker compose logs -f api worker beat
+docker compose down
 ```
 
-Оверлей подключает snmp-exporter к сети Containerlab, переключает драйвер на Scrapli и монтирует `intent-live/` как источник истины.
+The default network driver is `offline`. Keep development credentials and published service ports inside a trusted lab. A full container build/startup was not performed for this documentation update.
 
-С другой машины оверлей не нужен, достаточно переменных окружения:
+## Three lab modes
 
-```bash
-NETOPS_NETWORK_DRIVER=scrapli
-NETOPS_INTENT_REPO_PATH=/data/intent-live
-NETOPS_AUTH_PROFILES='{"lab": {"username": "admin", "password": "<пароль>"}}'
-```
-
-Проверка всего стенда одной командой:
-
-```bash
-cd backend && uv run python ../scripts/verify_live_lab.py
-```
-
-Скрипт проверяет по каждому узлу доступность SSH-порта, снятие running-config и чтение состояния. Устройства не изменяет, ненулевой код возврата означает, что что-то не отвечает.
-
-### 6.4. Диагностика
-
-```bash
-uv run python scripts/doctor.py      # проверка локального окружения
-docker compose ps                    # состояние контейнеров
-docker compose logs -f api worker    # логи backend
-```
-
----
-
-## 7. Демонстрационный сценарий
-
-Регламент на семь минут. Сценарий воспроизводится на файловой эмуляции и не зависит от доступности Containerlab.
-
-1. Запуск платформы и проверка `/healthz` и `/readyz`.
-2. Синхронизация инвентаря из `intent/inventory.yaml`.
-3. Обзор: состояние устройств, карта фабрики, лента задач.
-4. Правка intent-файла устройства.
-5. Запуск dry-run, просмотр диффа в Monaco, оценка риска.
-6. Подтверждение оператором и применение.
-7. Пост-проверки, фиксация коммита, статус IN_SYNC.
-8. Внесение дрейфа вручную в `lab/running/<hostname>.cfg`.
-9. Скан дрейфа, отображение расхождения, устранение дрейфа через тот же пайплайн.
-10. Аварийный контур: чтение состояния устройства из консоли, журнал действий.
-
-Возврат стенда в исходное состояние: `git checkout -- lab/running` и перезапуск `run_local.py`.
-
----
-
-## 8. API
-
-Префикс `/api/v1`. Swagger: `/docs`.
-
-| Группа | Метод и путь | Роль |
+| Mode | Inventory and state | What it establishes |
 |---|---|---|
-| Система | `GET /healthz`, `GET /readyz`, `GET /metrics` | без авторизации |
-| Устройства | `GET /devices`, `GET /devices/{id}` | viewer |
-| Устройства | `POST /devices`, `PATCH /devices/{id}`, `DELETE /devices/{id}` | admin |
-| Устройства | `POST /devices/probe` | admin |
-| Устройства | `POST /devices/{id}/promote` | admin |
-| Инвентарь | `POST /inventory/sync` | admin |
-| Задачи | `POST /jobs/dry-run`, `POST /jobs/deploy` | operator |
-| Задачи | `GET /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/logs`, `GET /jobs/{id}/diff` | viewer |
-| Задачи | `POST /jobs/{id}/explain` | viewer |
-| Дрейф | `POST /drift/scan`, `POST /drift/remediate` | operator |
-| Дрейф | `GET /drift/report` | viewer |
-| Пользователи | `GET /users`, `POST /users`, `GET/PATCH/DELETE /users/{id}`, `POST /users/{id}/token` | admin |
-| Аварийный контур | `GET /emergency/audit`, `POST /emergency/command`, `POST /emergency/soft-reset`, `POST /emergency/hard-reset`, `POST /emergency/patch` | admin |
-| ИИ и прогноз | `GET /devices/{id}/forecast`, `GET /forecast/alerts`, `POST /copilot/chat`, `GET /ai-guard/overview`, `GET /insights/fabric-summary` | viewer |
-| ИИ и прогноз | `POST /ai-guard/simulate`, `POST /insights/telegram/broadcast` | viewer |
-| Прочее | `GET /auth/me`, `GET /intent/lint`, `POST /system/chaos` | viewer / operator |
+| File-based offline lab | `intent/inventory.yaml`; four device files in `lab/running/` | Pipeline behavior without network devices. Apply/confirm/rollback operate on files; default health is synthetic from intent expectations |
+| Local Containerlab | `lab/fabric.clab.yaml`; Cisco spine, Arista spine, two Huawei leaves and two Alpine hosts | A separate six-node topology, **four network devices**. Requires vendor images, appropriate host resources and a matching live inventory |
+| External live lab | Separately documented six-network-device topology: two Arista spines, two Cisco leaves, two Huawei leaves | SSH access to an external lab. Requires supplied inventory, credentials, images and vendor-specific acceptance checks |
 
-Значимые особенности:
+These topologies are not interchangeable. The local Containerlab node names and roles differ from the external live-lab layout.
 
-- `POST /emergency/patch` всегда отвечает 501. Произвольный патч обходит намерение, преflight и расчёт отката, поэтому он запрещён. Попытка записывается в журнал.
-- `POST /emergency/command` выполняет только команды с префиксами `show`, `display`, `ping`, `traceroute`. Остальное отклоняется.
-- Устройства в режиме `MONITORING_ONLY` нельзя менять: расчёт и дрейф работают, изменение конфигурации блокируется до перевода в `MANAGED`.
+### Live configuration prerequisites
 
----
+There is **no tracked `intent-live/` directory** in this revision. The Compose lab overlay expects it by default; supply your own matching intent checkout rather than treating the overlay as ready out of the box.
 
-## 9. Безопасность и доступ
+1. Provision authorized vendor images and a working Containerlab topology separately.
+2. Create live inventory and per-device intent files; verify hostnames, platforms, management addresses, ports and `auth_profile` references.
+3. Configure `NETOPS_AUTH_PROFILES` locally in `backend/.env`, never in Git. Live local development also needs `uv sync --extra scrapli`.
+4. On the lab host, use the existing `clab_mgmt` network and point `INTENT_LIVE` at the supplied intent directory:
 
-- **Роли.** `viewer` < `operator` < `admin`. Проверка выполняется на сервере, сравнение ролей по рангу.
-- **Токены.** Пользовательские токены это 32 байта `secrets.token_urlsafe`, в базе лежит только SHA-256. Сравнение статических токенов из окружения идёт через `hmac.compare_digest`. Токен выдаётся один раз при создании и при ротации, старая версия перестаёт работать сразу.
-- **Пароли устройств.** Хранятся только в `backend/.env` в профилях `NETOPS_AUTH_PROFILES`, в Git не попадают. В инвентаре указаны имена профилей. Тип `SecretStr` не даёт утечь паролю в лог или в repr.
-- **Маскирование секретов в диффе.** Правила в `backend/netops/network/diff_filters.yaml` заменяют хеши паролей Cisco, Arista, Huawei и Eltex до расчёта патча, поэтому они не попадают ни в remediation, ни в rollback, ни в ответ API.
-- **Журналирование.** В лог задачи пишутся идентификатор задачи, шаг и имя узла, без содержимого конфигураций.
-- **Транспорт.** Проверка ключей хоста отключена осознанно, стенд поднимается заново при каждом развёртывании. Для production-настроек это нужно исправить.
-- **Токены в интерфейсе.** Фронтенд содержит токены для демонстрации ролей. Полноценного входа с сессиями нет, см. раздел 11.
+```bash
+INTENT_LIVE=/absolute/path/to/live-intent docker compose \
+  -f docker-compose.yml -f docker-compose.lab.yml config --quiet
+```
 
----
+After reviewing the merged configuration and the limitations below, replace `config --quiet` with `up -d --build` to start it. The overlay selects the `scrapli` driver and joins SNMP exporter to the Containerlab network. Validate read-only collection and health checks before attempting any deployment.
 
-## 10. Тесты и CI
+See [docs/live-lab.md](docs/live-lab.md) for the external topology and image/host notes; that document describes a lab setup, not proof of successful device transactions.
 
-### 10.1. Локальный запуск
+## Vendor matrix
+
+| Platform | Rendering / diff | Live-driver code | Current boundary |
+|---|---|---|---|
+| Cisco IOS-XE (`cisco_iosxe`) | Templates; hier_config `CISCO_IOS` | Scrapli; configuration, confirm and abort branches | Transaction/session commands must be accepted on the actual OS/image; no live acceptance result is claimed |
+| Arista EOS (`arista_eos`) | Templates; `ARISTA_EOS` | Scrapli; named configuration session and timer branches | Session behavior, error handling and reconnect/confirm need live verification |
+| Huawei VRP (`huawei_vrp`) | Templates; `HUAWEI_VRP` | scrapli-community/Paramiko; commit and rollback-by-commit-id branches | Running-config collection and post-check still use Cisco-style commands; Huawei parsing helpers are not wired into `snapshot()` |
+| Eltex ESR (`eltex_esr`) | Templates exist; `GENERIC` diff mapping | Platform mapping exists | Transactional apply is explicitly blocked; no Eltex node in the provided topology |
+| Eltex MES | Template directory only | No implemented platform/driver path established | Template presence is not supported-platform coverage |
+
+Intent substitutions are present in the current templates; the earlier claim that all templates were static is outdated. Some template sections still contain lab-specific addresses and configuration blocks. Render output must be reviewed for each target environment.
+
+## Operator workflow and access
+
+1. Start with the offline driver and synchronize the inventory.
+2. Edit device YAML intent, run pre-flight checks and create a dry-run plan.
+3. Review intended/running configuration, remediation and rollback in the UI.
+4. Approve the plan and deploy only to intended managed devices.
+5. Inspect job logs and post-check results before treating the change as complete.
+6. To demonstrate drift, change a lab state file and request a drift scan, or use the Compose Beat schedule.
+
+Offline deployment changes tracked files under `lab/running/`. Preserve any state you need and review `git diff -- lab/running`; do not reset unrelated work to clean up a demo.
+
+The backend checks `viewer`, `operator` and `admin` roles. Device changes are blocked for `MONITORING_ONLY` devices until they are promoted to managed mode. The emergency command endpoint restricts command prefixes; the arbitrary-patch endpoint returns 501 rather than bypassing planning.
+
+The UI includes development role tokens, not a complete session-based login. Server-side role checks do not make those demo credentials suitable for a shared deployment.
+
+## Verification
+
+Local run on **18 November 2026**, Python 3.13.14, source revision `d1d8118` before this documentation change:
 
 ```bash
 cd backend
-uv sync
+uv run --frozen pytest --cov=netops
+```
+
+**355 passed, 1 skipped; reported coverage 79%.** The skipped test requires `intent-live/inventory.yaml`, which is absent. These results cover local tests and fixtures, not live equipment or full-stack container acceptance.
+
+Additional developer checks:
+
+```bash
 uv run ruff check .
 uv run black --check .
 uv run mypy
-uv run pytest --cov=netops
 ```
 
 ```bash
@@ -359,141 +190,48 @@ npm run lint
 npm run build
 ```
 
-### 10.2. Текущий результат
+[.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml) defines backend checks, frontend build, a fixture-based Compose smoke test and conditional GHCR publishing. Workflow definitions are not a claim that a particular hosted run is passing.
 
-| Проверка | Результат |
-|---|---|
-| ruff | Без замечаний |
-| black | Без изменений, 113 файлов |
-| mypy strict | Без ошибок, 72 файла |
-| oxlint | 0 предупреждений, 0 ошибок |
-| tsc и vite build | Собирается |
-| pytest | 329 пройдено, 27 упало из 356 |
-| Покрытие | 77% |
+## Known limitations
 
-Двадцать семь падений имеют одну общую причину: слой шаблонов. Разбор в разделе 11.
+- **Live transactions:** many apply/commit responses are not checked for device-reported failure. Per-device branches need real OS/image validation; the rollout is not established as fabric-wide atomic.
+- **Huawei collection and health:** the active path uses `show running-config`, `show ip bgp summary` and `show ip interface brief`. Huawei-specific parser helpers do not fix these call sites.
+- **Health fallbacks:** unrecognized ping output can be interpreted as zero loss. Synthetic offline health must not be confused with observed network state.
+- **SSH trust:** strict host-key verification is disabled; the Paramiko path accepts unknown keys. This needs correction before use outside a disposable lab.
+- **Templates and vendor scope:** lab-specific blocks remain; Eltex ESR deployment is blocked, and MES templates alone do not establish support.
+- **Deployment safety:** Huawei rollback commit identifiers are kept in worker memory; interruption/recovery behavior needs explicit testing.
+- **Credentials:** development UI/API tokens and lab credential material need review and replacement. Some checked-in diff artifacts contain lab password hashes; they are not evidence that secrets are universally filtered.
+- **Monitoring and integration:** Grafana is not in Compose. Frontend Playwright scripts are not wired into the npm scripts or the shown CI workflow.
 
-### 10.3. Pipeline
+## Roadmap
 
-`.github/workflows/ci-cd.yml`, четыре задания:
+- Validate collection, command errors, transaction sessions and rollback on specific Cisco, Arista and Huawei lab images.
+- Connect vendor-specific health commands/parsers and fail closed on unrecognized output.
+- Remove remaining lab-specific template assumptions and test intent changes against rendered output.
+- Decide explicit Eltex ESR/MES scope; add drivers, topology and acceptance tests before expanding the vendor list.
+- Enable SSH host-key verification and replace demo authentication with a proper operator login.
+- Review lab credential artifacts and external exposure; handle interrupted jobs and rollback state reliably.
+- Add full-stack/live acceptance runs and wire browser tests into CI.
+- Add Grafana dashboards if required; keep them separate from already implemented Prometheus monitoring.
 
-1. **backend.** ruff, black, mypy, pytest с покрытием, отчёт в сводку запуска.
-2. **frontend.** `npm ci`, сборка.
-3. **stack.** валидация compose, сборка образов, подъём стека на фикстурах, smoke-тест, вывод логов при падении.
-4. **publish.** публикация образа бэкенда в GHCR при пуше в `main`.
+## Repository and further documentation
 
----
+```text
+backend/          API, services, pipeline, drivers, migrations and tests
+frontend/         React operator interface and Monaco diff views
+intent/           Offline inventory and per-device YAML intent
+templates/        Vendor Jinja2 templates
+lab/              Containerlab manifest, golden configs and offline state
+monitoring/       Prometheus, alert rules and SNMP exporter configuration
+docs/             Architecture, templates and lab notes
+scripts/          Diagnostic and lab utilities
+```
 
-## 11. Известные ограничения
+- [Backend architecture](docs/backend-architecture.md)
+- [Backend setup](backend/README.md)
+- [Intent format](intent/README.md)
+- [Template integration](docs/templates-integration.md)
+- [Offline lab](lab/README.md)
+- [Frontend architecture](frontend/ARCHITECTURE.md)
 
-### 11.1. Шаблоны не реагируют на intent
-
-Самое серьёзное расхождение с проектным замыслом.
-
-Все 24 файла в `templates/` и в фикстурах тестов содержат статические дампы конфигураций, обёрнутые в `{% raw %}`. Подстановок `intent.*`, `device.*` и циклов в них нет. Проверка на реальных данных: смена ASN устройства в intent-файле с 65000 на 65999 не меняет ни одного байта в отрендеренной конфигурации.
-
-Следствия:
-
-- Правка YAML не приводит к изменению конфигурации, dry-run показывает пустой патч.
-- Модуль рендеринга и связанные с ним тесты описывают старую, intent-ориентированную схему и расходятся с шаблонами.
-- Интеграционные тесты деплоя падают на проверке `no changes to deploy`: разницы между эталоном и текущим состоянием действительно нет.
-
-Что нужно сделать: вернуть в шаблоны подстановки из intent, оставив статические части в `{% raw %}`. Контракт рендеринга (`SECTIONS = base, interfaces, acls, bgp`, порядок секций, `StrictUndefined`) менять не нужно, он корректен.
-
-### 11.2. Шаблоны Huawei не работают
-
-Все четыре файла в `templates/huawei_vrp/` начинаются с условия `{% if 'leaf-1' in hostname %}`. Переменная `hostname` в контекст рендеринга не передаётся, туда приходят `device` и `intent`. Jinja2 работает в режиме `StrictUndefined` и выбрасывает ошибку.
-
-Устройства Huawei не проходят dry-run. Это вторая по количеству падений причина в тестах.
-
-### 11.3. Шаблоны Huawei пишут один конфиг на все ноды
-
-Файл различает leaf-1 и leaf-2 условием по имени. Условие неверное, в инвентаре имя узла это `leaf-1.croc.lab`, а шаблон сравнивает с `leaf-1` и `leaf1`. Даже после исправления переменной потребуется разбор имени устройства, иначе `leaf-2.croc.lab` получит конфигурацию leaf-1.
-
-### 11.4. Eltex ESR заведен, но не работает
-
-- Нет каталога `templates/eltex_esr/`, платформа не рендерится.
-- Транзакционное применение не реализовано и возвращает понятную ошибку.
-- Диалект hier_config `GENERIC`, качество диффа ниже остальных.
-- Нет health-пробы интерфейсов и парсеров телеметрии.
-- Все правила фильтров диффа помечены как низкоуверенные и не сверены с реальным выводом.
-
-### 11.5. Границы проверок состояния
-
-- Health-проба парсит `show ip interface brief` только для Cisco и Arista. Для Huawei и Eltex состояние портов не проверяется.
-- Команда `show ip bgp summary` используется для всех платформ, включая Huawei.
-- Правила фильтров для Huawei и Eltex написаны по документации, на живом оборудовании не сверены.
-
-### 11.6. Grafana
-
-В Compose нет сервиса Grafana и нет дашбордов. Тимофей в спринте 2 и 3 брал Prometheus и Grafana как свои задачи. Фактически реализован Prometheus со снапшотом и правилами алертов, Grafana не сделана. В плане это отдельная задача Тимофея на 14 октября.
-
-### 11.7. Аутентификация интерфейса
-
-Фронтенд содержит токены ролей в исходном коде и переключает роль без серверной сессии. Для демонстрации разграничения прав этого достаточно, для production нет. Токены бэкенда при этом устроены правильно, см. раздел 9.
-
-### 11.8. Незадействованный код
-
-- `AiTelemetryGuard.check_preflight`, блокирующий деплой по прогнозу загрузки, не вызывается ни из одного маршрута.
-- `record_chaos_event` не вызывается, поэтому события хаоса не попадают на графики прогноза.
-- Скрипты Playwright во `frontend/tests/` не подключены к npm-скриптам и не запускаются в CI.
-- `tools/timesfm_server.py` упомянут в настройках, но каталога `tools/` в репозитории нет.
-- `frontend/README.md` остался шаблонным файлом от Vite.
-
-### 11.9. Секреты в репозитории
-
-В `intent/diffs/*.cfg` лежат хеши паролей лабораторных устройств. Это не рабочие пароли платформы, но перед публичным релизом их стоит убрать.
-
----
-
-## 12. Планирование работ
-
-Детальный разбор по исполнителям и дедлайнам: `задачи_по_спринтам.md`. Сроки спринтов: 28 сентября - 16 октября, сдача 16 октября в 18:00, онлайн-отбор 19-21 октября, финал 22 октября.
-
-### 12.1. Что закрыто
-
-| Задача спринта | Состояние |
-|---|---|
-| Спринт 1: стенд в Containerlab | Закрыто, манифест и скрипт сброса на месте |
-| Спринт 1: формат YAML и валидация | Закрыто, lint работает, `inventory.yaml` проходит схему |
-| Спринт 1: каркас API и CRUD устройств | Закрыто |
-| Спринт 1: фронт со списком устройств | Закрыто |
-| Спринт 2: Redis и Celery | Закрыто |
-| Спринт 2: эндпоинты dry-run, статус, дифф | Закрыто |
-| Спринт 2: шаблоны Jinja2 | Частично, файлы есть, но не intent-ориентированные |
-| Спринт 2: hier_config | Закрыто, диалекты для трёх платформ |
-| Спринт 2: Prometheus | Закрыто, снапшот и алерты |
-| Спринт 2: Grafana | Не начато |
-| Спринт 3: транзакционный деплой | Код готов, тесты падают из-за шаблонов |
-| Спринт 3: дрейф через Beat | Закрыто |
-| Спринт 3: RBAC | Закрыто, три роли на сервере |
-| Спринт 3: Monaco Diff Viewer | Закрыто |
-| Спринт 3: ИИ-ассистент | Закрыто, каскад провайдеров плюс резерв на правилах |
-| Спринт 3: финальный compose | Закрыто, фронтенд и Prometheus внутри, smoke-тест в CI |
-
-### 12.2. Ближайшие задачи
-
-1. Вернуть intent-ориентированный рендер в шаблоны Cisco и Arista. Это разблокирует деплой и большую часть тестов.
-2. Исправить шаблоны Huawei: передать `device` в контекст, разбирать имя узла, разложить конфигурации по нодам.
-3. Подтвердить транзакцию Huawei на живом CE12800.
-4. Подключить Grafana и собрать дашборд состояния BGP и портов.
-5. Решить по Eltex: либо шаблоны и нода в стенде, либо убрать платформу из заявленного списка вендоров.
-6. Закрыть вход в интерфейс вместо токенов в исходниках.
-7. Довести тесты до зелёного состояния и обновить счётчик в этом документе.
-
----
-
-## 13. Документация
-
-| Файл | Содержание |
-|---|---|
-| `docs/backend-architecture.md` | Структура и логика бэкенда |
-| `docs/live-lab.md` | Живой стенд: карта портов, образы, проверка, эксплуатация |
-| `docs/LIVE_LAB_GUIDE.md` | Краткая памятка по подключению к стенду |
-| `docs/templates-integration.md` | Как подключаются шаблоны и что они получают на вход |
-| `backend/README.md` | Запуск, настройки, API бэкенда |
-| `frontend/ARCHITECTURE.md` | Компоненты и потоки интерфейса |
-| `intent/README.md` | Формат инвентаря и intent-файлов |
-| `lab/README.md` | Работа с файловой эмуляцией и сброс стенда |
-| `templates/README.md` | Соглашения по шаблонам |
-| `задачи_по_спринтам.md` | Задачи по спринтам, исполнители, дедлайны |
+Some deeper documents reflect earlier development snapshots. Prefer the current source and the scope/limitations above when interpreting them.
